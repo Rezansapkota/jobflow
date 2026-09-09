@@ -165,6 +165,18 @@ class BrowserTests(unittest.TestCase):
         self.assertIn('Darwin', result['location'])
         page.close()
 
+    def test_signed_in_linkedin_layout_and_seek_domain(self):
+        from discovery import extract_job
+        page = self.browser.new_page()
+        description = 'Support customers and maintain accurate records. ' * 4
+        page.set_content('<title>Service Officer | Fictional Store | LinkedIn</title><main>Fictional Store\nService Officer\nDarwin, Australia\n<div><div><h2>About the job</h2></div><div data-testid="expandable-text-box">' + description + '</div></div></main>')
+        result = extract_job(page, 'LinkedIn', 'https://www.linkedin.com/jobs/view/12345678/')
+        self.assertEqual(result['title'], 'Service Officer')
+        self.assertEqual(result['company'], 'Fictional Store')
+        self.assertIn('Support customers', result['description'])
+        self.assertEqual(app.validate_url('https://au.seek.com/job/12345678?ref=search'), ('https://www.seek.com.au/job/12345678', 'SEEK'))
+        page.close()
+
     def test_linkedin_multistep_with_hidden_login_and_answered_radio(self):
         context = self.browser.new_context()
         fixture = '''<input type="password" hidden><main><button onclick="document.querySelector('[role=dialog]').hidden=false">Easy Apply</button></main>

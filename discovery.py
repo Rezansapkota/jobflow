@@ -73,6 +73,20 @@ def extract_job(page, source, canonical_url):
                     return value
         return ''
     title, company, description, location = [first_text(s) for s in selectors[source]]
+    if source == 'LinkedIn' and (not title or not company or len(description) < 100):
+        # New signed-in layout uses generated classes and no h1.
+        about = page.get_by_role('heading', name='About the job', exact=True)
+        parts = page.title().rsplit(' | ', 2)
+        if about.count() == 1 and len(parts) == 3 and parts[-1] == 'LinkedIn':
+            section = about.locator('../..')
+            text = section.locator('[data-testid="expandable-text-box"]').first
+            if text.count():
+                description = text.inner_text().strip()
+                title, company = parts[0].strip(), parts[1].strip()
+                main_lines = [line.strip() for line in page.locator('main').inner_text().splitlines() if line.strip()]
+                if title in main_lines:
+                    position = main_lines.index(title)
+                    location = main_lines[position + 1].split('\u00b7')[0].strip() if position + 1 < len(main_lines) else ''
     if not title or not company or len(description) < 100:
         raise ValueError('Could not extract a complete job title, company and description. No application prepared.')
     return dict(url=canonical_url, source=source, title=title, company=company, description=description, location=location)
@@ -128,6 +142,10 @@ def discover_site(agent, profile, config, seen):
     """Yield extracted jobs, at most max_jobs across up to 3 pages per source/role."""
     from app import validate_url
     count = 0
+    def issue(message):
+        agent.progress(message)
+        if hasattr(agent, 'source_issues'):
+            agent.source_issues.append(message)
     for source in config['sources']:
         for role in config['roles']:
             for index in range(config['pages']):
@@ -138,7 +156,9 @@ def discover_site(agent, profile, config, seen):
                 try:
                     target = search_url(source, role, profile['search_location'], index)
                     search.goto(target, wait_until='domcontentloaded', timeout=45000)
-                    wait_for_access(agent, search, target)
+                    if challenged(search):
+                        issue(f'{source}: sign-in or verification required. Use Connect {source} in My profile, then retry search. Continuing with the other site.')
+                        return
                     search.wait_for_timeout(2000)
                     # Scroll only loaded results. Never repeatedly hammer blocked pages.
                     for _ in range(2):
@@ -155,7 +175,10 @@ def discover_site(agent, profile, config, seen):
                         except ValueError:
                             continue
                     if not candidates:
-                        agent.progress(f'{source}: no new accessible job links on this page. It may be empty, require sign-in, or have changed layout.')
+                        if links:
+                            agent.progress(f'{source}: these listings are already tracked. Checking the next configured page.')
+                            continue
+                        issue(f'{source}: no readable job links found. The page may be empty, blocked, or have changed layout. Open the site to check your search.')
                         break
                     for url in candidates:
                         if agent.stopped() or count >= config['max_jobs']:
@@ -164,15 +187,16 @@ def discover_site(agent, profile, config, seen):
                         detail = agent.context.new_page()
                         try:
                             detail.goto(url, wait_until='domcontentloaded', timeout=45000)
-                            wait_for_access(agent, detail, url)
+                            if challenged(detail):
+                                raise ValueError(f'{source} requires sign-in or verification. Use Connect {source} in My profile, then retry.')
                             detail.wait_for_timeout(1500)
                             yield extract_job(detail, source, url)
                         except Exception as exc:
-                            agent.progress(f'Could not read {url}: {str(exc)[:180]}')
+                            issue(f'Could not read {url}: {str(exc)[:180]}')
                         finally:
                             detail.close()
                 except Exception as exc:
-                    agent.progress(f'{source} search stopped: {str(exc)[:180]}')
+                    issue(f'{source} search stopped: {str(exc)[:180]}')
                     break
                 finally:
                     search.close()

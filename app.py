@@ -13,6 +13,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs, urlencode
 from documents import docx, plain_text
+import runtime
+BUILD_ID = runtime.build_id()
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / 'data'
@@ -127,7 +129,7 @@ def validate_url(url):
     if (host == 'linkedin.com' or re.fullmatch(r'[a-z]{2,3}\.linkedin\.com', host)) and re.fullmatch(r'/jobs/view/(?:[^/]*-)?\d+/?', p.path):
         job_id = re.search(r'(\d+)/?$', p.path)[1]
         return f'https://www.linkedin.com/jobs/view/{job_id}/', 'LinkedIn'
-    if host in ('seek.com.au', 'www.seek.com.au') and re.fullmatch(r'/job/\d+/?', p.path):
+    if host in ('seek.com.au', 'www.seek.com.au', 'au.seek.com') and re.fullmatch(r'/job/\d+/?', p.path):
         return f'https://www.seek.com.au{p.path.rstrip("/")}', 'SEEK'
     raise ValueError('Paste a LinkedIn /jobs/view/… or SEEK /job/… link.')
 
@@ -248,10 +250,12 @@ class Handler(BaseHTTPRequestHandler):
         if not self.allowed_host():
             return self.send(403, {'error': 'Invalid host'})
         path = urlparse(self.path).path
+        if path == '/api/health':
+            return self.send(200, {'app': 'jobflow', 'build': BUILD_ID})
         if path == '/api/state':
             p = profile()
             from certificates import rows, effective_profile
-            return self.send(200, {'profile': p, 'profiles': profiles(), 'certificates': rows(p['id']), 'combined_certifications': effective_profile(p)['certifications'], 'jobs': [{**j, 'review_token': __import__('review').fingerprint(j), 'documents_approved': __import__('review').approved(j)} for j in jobs() if j.get('profile_id', 'default') == p['id']], 'running': RUN_LOCK.locked(), 'preparing': AI_LOCK.locked(), 'token': TOKEN, 'account_pending': __import__('accounts').pending()})
+            return self.send(200, {'profile': p, 'profiles': profiles(), 'certificates': rows(p['id']), 'combined_certifications': effective_profile(p)['certifications'], 'jobs': [{**j, 'review_token': __import__('review').fingerprint(j), 'documents_approved': __import__('review').approved(j)} for j in jobs() if j.get('profile_id', 'default') == p['id']], 'running': RUN_LOCK.locked(), 'preparing': AI_LOCK.locked(), 'token': TOKEN, 'account_pending': __import__('accounts').pending(), 'connection_note': __import__('accounts').connection_note(p['id'])})
         if path.startswith('/api/certificates/file/'):
             try:
                 from certificates import get, file_path, ALLOWED
@@ -424,10 +428,22 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError('Invalid status.')
                 job.update(status=body['status'], note='Status updated by you.')
                 save_job(job)
+            elif path == '/api/accounts/connect':
+                from accounts import account_url, connect_worker
+                p = profile()
+                source = body.get('source')
+                account_url(p, source)
+                if not RUN_LOCK.acquire(blocking=False):
+                    raise ValueError('A browser run is already active.')
+                STOP.clear()
+                threading.Thread(target=connect_worker, args=(p, source), daemon=True).start()
             elif path == '/api/automation/start':
                 from automation import validate_config, run
                 p = application_profile()
                 config = validate_config(p, body)
+                from local_ai import status as ai_status
+                if not ai_status()['available']:
+                    raise ValueError('Start Ollama with qwen3:8b before combined search. Your saved jobs are unchanged.')
                 if not RUN_LOCK.acquire(blocking=False):
                     raise ValueError('A browser run is already active.')
                 STOP.clear()
@@ -461,5 +477,6 @@ if __name__ == '__main__':
     init()
     port = int(os.environ.get('PORT', '8768'))
     server = ThreadingHTTPServer(('127.0.0.1', port), Handler)
+    runtime.MANIFEST.write_text(json.dumps({'port': port, 'build': BUILD_ID}))
     print(f'Jobflow is running at http://127.0.0.1:{port}', flush=True)
     server.serve_forever()

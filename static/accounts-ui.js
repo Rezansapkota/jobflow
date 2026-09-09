@@ -79,3 +79,23 @@ runMode.innerHTML = '<option value="false">Search and prepare for my review</opt
 const reviewNotice = document.createElement('p');
 reviewNotice.textContent = 'New applications stop in the pipeline for your review. Open each job to read its resume and cover letter, approve them, then use Run selected to submit.';
 $('#agent-form').prepend(reviewNotice);
+
+const connectionControls = document.createElement('div');
+connectionControls.innerHTML = '<div class="detail-actions"><button type="button" data-connect="LinkedIn">Connect LinkedIn</button><button type="button" data-connect="SEEK">Connect SEEK</button></div><p id="connection-note" role="status"></p>';
+accountFields.appendChild(connectionControls);
+connectionControls.onclick = async e => {
+    const source = e.target.dataset.connect;
+    if (!source) return;
+    try {
+        await saveProfileChanges();
+        await api('/api/accounts/connect', {source});
+        await refresh();
+        toast(`Sign in to ${source} in Chrome, then confirm the account in Jobflow.`);
+    } catch (err) { toast(err.message); }
+};
+const beforeConnectionRender = render;
+render = function() {
+    beforeConnectionRender();
+    $('#connection-note').textContent = state.connection_note || 'Connect a site when search reports that sign-in or verification is required.';
+    connectionControls.querySelectorAll('button').forEach(b => b.disabled = Boolean(state.running || state.preparing));
+};

@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 LOCK = threading.Lock()
 CONFIRMED = threading.Event()
 PENDING = None
+CONNECTION_NOTE = {}
 DEFAULTS = {'LinkedIn': 'https://www.linkedin.com/me/', 'SEEK': 'https://www.seek.com.au/profile/me'}
 FIELDS = {'LinkedIn': 'linkedin_url', 'SEEK': 'seek_url'}
 
@@ -16,7 +17,7 @@ def account_url(profile, source):
         raise ValueError('Choose LinkedIn or SEEK.')
     value = profile.get(FIELDS[source], '').strip() or DEFAULTS[source]
     parsed = urlparse(value)
-    hosts = ('linkedin.com', 'www.linkedin.com') if source == 'LinkedIn' else ('seek.com.au', 'www.seek.com.au')
+    hosts = ('linkedin.com', 'www.linkedin.com') if source == 'LinkedIn' else ('seek.com.au', 'www.seek.com.au', 'au.seek.com')
     if parsed.scheme != 'https' or parsed.hostname not in hosts or parsed.username or parsed.password or parsed.port not in (None, 443):
         raise ValueError(f'Use an HTTPS {source} profile link on its official website.')
     return value
@@ -36,6 +37,24 @@ def browser_data(profile):
 def pending():
     with LOCK:
         return dict(PENDING) if PENDING else None
+
+
+def connection_note(profile_id):
+    return CONNECTION_NOTE.get(profile_id, '')
+
+
+def connect_worker(profile, source):
+    import app
+    from browser_agent import BrowserAgent
+    CONNECTION_NOTE[profile['id']] = f'Opening {source} in Chrome...'
+    try:
+        with BrowserAgent(browser_data(profile), app.STOP) as agent:
+            prepare(agent, profile, [source])
+        CONNECTION_NOTE[profile['id']] = f'{source} account confirmed. Start combined search when ready.'
+    except Exception as exc:
+        CONNECTION_NOTE[profile['id']] = f'{source} connection stopped: {str(exc)[:250]}'
+    finally:
+        app.RUN_LOCK.release()
 
 
 def confirm(token, profile_id):
@@ -63,7 +82,7 @@ def prepare(agent, profile, sources):
                 if agent.stopped() or page.is_closed():
                     raise ValueError('Account sign-in was stopped or its browser tab was closed.')
                 if CONFIRMED.is_set():
-                    if challenged(page) or urlparse(page.url).hostname not in (('linkedin.com', 'www.linkedin.com') if source == 'LinkedIn' else ('seek.com.au', 'www.seek.com.au')):
+                    if challenged(page) or urlparse(page.url).hostname not in (('linkedin.com', 'www.linkedin.com') if source == 'LinkedIn' else ('seek.com.au', 'www.seek.com.au', 'au.seek.com')):
                         CONFIRMED.clear()
                         agent.progress('Finish signing in on the job site before confirming the account.')
                     else:

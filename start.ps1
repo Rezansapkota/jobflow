@@ -6,5 +6,5 @@ if (-not (Test-Path -LiteralPath $jobflowPython)) {
     python -m venv .venv
     if ($LASTEXITCODE -ne 0) { throw 'Could not create the Python environment.' }
 }
-& $jobflowPython start.py --port $Port
+if ($PSBoundParameters.ContainsKey('Port')) { & $jobflowPython start.py --port $Port } else { & $jobflowPython start.py }
 if ($LASTEXITCODE -ne 0) { throw 'Jobflow could not start. Check the error above.' }

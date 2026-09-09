@@ -49,7 +49,7 @@ async function refreshAgent() {
     const run = await response.json();
     $('#agent-start').disabled = Boolean(state.running || state.preparing);
     $('#agent-stop').disabled = !state.running;
-    $('#agent-summary').textContent = run.status === 'idle' ? 'No run started.' : `${run.status} · ${run.found || 0} found · ${run.prepared || 0} prepared · ${run.attempted || 0} attempted · ${run.submitted || 0} confirmed submitted`;
+    $('#agent-summary').textContent = run.status === 'idle' ? 'No run started.' : `${run.status} / ${run.stage || run.status} · ${run.found || 0} found · ${run.revisited || 0} saved jobs checked / ${run.prepared || 0} document pairs prepared · ${run.attempted || 0} attempted · ${run.submitted || 0} confirmed submitted`;
     $('#agent-events').innerHTML = (run.events || []).slice().reverse().map(event => `<li><small>${esc(new Date(event.time).toLocaleTimeString())}</small> ${esc(event.message)}</li>`).join('');
 }
 const resumeDetail = detail;
@@ -80,7 +80,7 @@ combinedSearchNav.onclick = () => { view('automation'); $('#breadcrumb').textCon
 $('#agent-form input[name=max_applications]').closest('label').hidden = true;
 const combinedSearchNote = document.createElement('p');
 combinedSearchNote.className = 'muted';
-combinedSearchNote.textContent = 'One run searches LinkedIn and SEEK in Chrome, alternates results from both sites, and adds new jobs to one pipeline. Suitable jobs get a tailored resume and cover letter for your review.';
+combinedSearchNote.textContent = 'One run checks unfinished saved jobs, searches LinkedIn and SEEK in Chrome, and adds new results to one pipeline. Public listings are searched first; sign in only if a site requests it. Suitable jobs get a tailored resume and cover letter for your review.';
 $('#agent-form').before(combinedSearchNote);
 const dashboardSearch = document.createElement('button');
 dashboardSearch.className = 'primary';

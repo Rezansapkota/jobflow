@@ -74,7 +74,7 @@ class BrowserAgent:
             from discovery import wait_for_access
             wait_for_access(self, page, job['url'])
         if job['source'] == 'LinkedIn':
-            button = page.get_by_role('button', name=re.compile(r'^Easy Apply(?:\s|$)', re.I)).first
+            button = page.get_by_role('button', name=re.compile(r'^(Easy Apply|LinkedIn Apply|Apply)(?:\s|$)', re.I)).first
         else:
             button = page.get_by_role('link', name=re.compile(r'^Apply(?: now)?$', re.I)).first
             if not button.count():
@@ -88,7 +88,7 @@ class BrowserAgent:
                 return 'needs_input', 'Run stopped before submission.'
             from urllib.parse import urlparse
             host = urlparse(page.url).hostname or ''
-            if host not in ('www.linkedin.com', 'linkedin.com', 'www.seek.com.au', 'seek.com.au') and not re.fullmatch(r'[a-z]{2,3}\.linkedin\.com', host):
+            if host not in ('www.linkedin.com', 'linkedin.com', 'www.seek.com.au', 'seek.com.au', 'au.seek.com') and not re.fullmatch(r'[a-z]{2,3}\.linkedin\.com', host):
                 return self.handoff(page, 'Application moved to an external site. Complete it manually.')
             if page.locator('iframe[src*="captcha"]:visible, iframe[title*="challenge" i]:visible, input[type=password]:visible').count():
                 return self.handoff(page, 'Login or verification needs your input.')

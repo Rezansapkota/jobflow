@@ -65,12 +65,32 @@ class AutomationTests(unittest.TestCase):
         self.assertEqual(automation.current()['submitted'], 0)
         self.assertIn('cover_letter', job)
 
-    def test_account_failure_blocks_discovery_and_submission(self):
-        with patch('accounts.prepare', side_effect=ValueError('Sign in first')), patch('discovery.discover') as discover:
-            self.run_pipeline(True)
-        discover.assert_not_called()
-        self.assertEqual(FakeBrowser.attempts, [])
-        self.assertEqual(automation.current()['status'], 'failed')
+    def test_search_does_not_require_account_confirmation(self):
+        with patch('accounts.prepare', side_effect=ValueError('Sign in first')) as prepare:
+            self.run_pipeline(False)
+        prepare.assert_not_called()
+        self.assertEqual(app.jobs()[0]['status'], 'ready')
+
+    def test_saved_unfinished_job_is_retried_without_new_results(self):
+        app.save_job({**JOB, 'id': 'saved-job', 'profile_id': 'default', 'status': 'saved', 'resume': None})
+        with patch('discovery.discover', return_value=iter([])):
+            self.run_pipeline(False)
+        self.assertEqual(app.get_job('saved-job')['status'], 'ready')
+        self.assertEqual(automation.current()['revisited'], 1)
+        self.assertEqual(automation.current()['prepared'], 1)
+
+    def test_no_results_is_not_reported_as_success(self):
+        with patch('discovery.discover', return_value=iter([])):
+            self.run_pipeline(False)
+        self.assertEqual(automation.current()['status'], 'no_results')
+
+    def test_prepared_and_uncertain_jobs_are_not_regenerated(self):
+        for jid, status in [('ready-job', 'ready'), ('uncertain-job', 'uncertain')]:
+            app.save_job({**JOB, 'url': JOB['url'] + jid, 'id': jid, 'profile_id': 'default', 'status': status, 'resume': {'text': 'Reviewed resume'}, 'cover_letter': 'Reviewed letter'})
+        with patch('discovery.discover', return_value=iter([])), patch('local_ai.rewrite') as rewrite:
+            self.run_pipeline(False)
+        rewrite.assert_not_called()
+        self.assertEqual(app.get_job('uncertain-job')['status'], 'uncertain')
 
     def test_prepare_mode_does_not_apply(self):
         self.run_pipeline(False)

@@ -8,7 +8,7 @@ A local application workspace for LinkedIn and SEEK. Built with Python, SQLite, 
 .\.venv\Scripts\python.exe start.py
 ```
 
-Open http://127.0.0.1:8768. The launcher reuses an already running server. Keep the terminal open while using the app. If the virtual environment does not exist, create it with `python -m venv .venv`. This command does not require PowerShell script execution to be enabled.
+Use the address printed by the launcher. It remembers the latest port, reuses the matching build, and selects a free port when an older idle build occupies the previous address. Keep the terminal open while using the app. If the virtual environment does not exist, create it with `python -m venv .venv`. This command does not require PowerShell script execution to be enabled.
 
 To use a different port:
 
@@ -120,3 +120,7 @@ Use **Search jobs** on the dashboard or **Job search** in the sidebar. One **Sea
 ## Google sign-in rejected
 
 Google may reject sign-in from an automation-controlled browser, including Chrome. Signing into Chrome is not required to use Jobflow. In the agent window, return to LinkedIn or SEEK and use the site's own email sign-in option where offered. Enter the job-site password, not your Google password. For a Google-only account, use ordinary Chrome and the job site's account settings/help to establish an alternative sign-in method if supported. Signing into ordinary Chrome does not automatically sign in the separate agent session. Jobflow does not bypass this restriction. See https://support.google.com/accounts/answer/7675428 .
+
+## Reliability update
+
+Combined search now checks unfinished saved jobs first and searches public listings without account confirmation. If one site requires verification or has no readable listings, it reports the issue and continues with the other site. Use **My profile / Connect LinkedIn** or **Connect SEEK** to establish access separately. Document preparation errors and no-result runs are distinct from successful runs. Existing completed document pairs and uncertain submissions are preserved. Ollama availability is checked before starting. See [the automation brief](AUTOMATION_BRIEF.md) for the full workflow requirements.
