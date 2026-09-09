@@ -1,0 +1,382 @@
+"""Local job application workspace. Run: python app.py"""
+import json
+import os
+import re
+import secrets
+import sys
+import sqlite3
+import threading
+import uuid
+from datetime import datetime, timezone
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import urlparse, parse_qs, urlencode
+from documents import docx, plain_text
+
+ROOT = Path(__file__).resolve().parent
+DATA = ROOT / 'data'
+DATA.mkdir(exist_ok=True)
+DB = DATA / 'workspace.db'
+TOKEN = secrets.token_urlsafe(32)
+RUN_LOCK = threading.Lock()
+STOP = threading.Event()
+AI_LOCK = threading.Lock()
+MUTATION_LOCK = threading.Lock()
+STATUSES = {'saved', 'ready', 'needs_input', 'submitted', 'uncertain', 'rejected', 'interview'}
+DEFAULT_PROFILE = dict(title='Default profile', name='', email='', phone='', location='', headline='', summary='', skills='', experience='', education='', certifications='', roles='', search_location='', work_rights='', constraints='', answers={})
+
+
+@contextmanager
+def connect():
+    c = sqlite3.connect(DB)
+    c.row_factory = sqlite3.Row
+    try:
+        with c:
+            yield c
+    finally:
+        c.close()
+
+
+def init():
+    with connect() as c:
+        c.executescript('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT); CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, url TEXT UNIQUE, payload TEXT NOT NULL);')
+        c.execute('CREATE TABLE IF NOT EXISTS profiles (id TEXT PRIMARY KEY, payload TEXT NOT NULL)')
+        if not c.execute('SELECT 1 FROM profiles LIMIT 1').fetchone():
+            legacy = c.execute("SELECT value FROM settings WHERE key='profile'").fetchone()
+            initial = {**DEFAULT_PROFILE, **(json.loads(legacy[0]) if legacy else {}), 'id': 'default'}
+            c.execute('INSERT INTO profiles VALUES (?,?)', ('default', json.dumps(initial)))
+            c.execute("INSERT OR REPLACE INTO settings VALUES ('active_profile', ?)", ('default',))
+        # A crash after clicking Submit must never cause an automatic retry.
+        for row in c.execute('SELECT * FROM jobs').fetchall():
+            job = json.loads(row['payload'])
+            if job.get('status') == 'running':
+                job.update(status='uncertain', note='Previous run was interrupted. Check the site before retrying.')
+                c.execute('UPDATE jobs SET payload=? WHERE id=?', (json.dumps(job), job['id']))
+        row = c.execute("SELECT value FROM settings WHERE key='automation'").fetchone()
+        if row:
+            run = json.loads(row[0])
+            if run.get('status') == 'running':
+                run['status'] = 'interrupted'
+                run.setdefault('events', []).append({'time': datetime.now(timezone.utc).isoformat(), 'message': 'Server restarted. Run was interrupted; check uncertain applications before retrying.'})
+                c.execute("UPDATE settings SET value=? WHERE key='automation'", (json.dumps(run),))
+
+
+def profile(pid=None):
+    with connect() as c:
+        if pid is None:
+            active = c.execute("SELECT value FROM settings WHERE key='active_profile'").fetchone()
+            pid = active[0] if active else 'default'
+        row = c.execute('SELECT payload FROM profiles WHERE id=?', (pid,)).fetchone()
+    if not row:
+        raise ValueError('Profile not found.')
+    return {**DEFAULT_PROFILE, **json.loads(row[0]), 'id': pid}
+
+
+def profiles():
+    with connect() as c:
+        return [{'id': r['id'], 'title': json.loads(r['payload']).get('title', 'Default profile')} for r in c.execute('SELECT * FROM profiles ORDER BY rowid')]
+
+
+def require_profile(job, p):
+    if job.get('profile_id', 'default') != p['id']:
+        raise ValueError('This job belongs to a different profile. Switch profiles first.')
+
+
+def jobs():
+    with connect() as c:
+        return [json.loads(r[0]) for r in c.execute('SELECT payload FROM jobs ORDER BY rowid DESC')]
+
+
+def get_job(jid):
+    with connect() as c:
+        row = c.execute('SELECT payload FROM jobs WHERE id=?', (jid,)).fetchone()
+    if not row:
+        raise ValueError('Job not found.')
+    return json.loads(row[0])
+
+
+def save_job(job):
+    with connect() as c:
+        c.execute('INSERT INTO jobs VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload', (job['id'], job['url'], json.dumps(job)))
+
+
+def validate_url(url):
+    p = urlparse(url.strip())
+    host = (p.hostname or '').lower()
+    if p.scheme != 'https' or p.username or p.password or p.port not in (None, 443):
+        raise ValueError('Use an HTTPS LinkedIn or SEEK job link.')
+    if (host == 'linkedin.com' or re.fullmatch(r'[a-z]{2,3}\.linkedin\.com', host)) and re.fullmatch(r'/jobs/view/(?:[^/]*-)?\d+/?', p.path):
+        job_id = re.search(r'(\d+)/?$', p.path)[1]
+        return f'https://www.linkedin.com/jobs/view/{job_id}/', 'LinkedIn'
+    if host in ('seek.com.au', 'www.seek.com.au') and re.fullmatch(r'/job/\d+/?', p.path):
+        return f'https://www.seek.com.au{p.path.rstrip("/")}', 'SEEK'
+    raise ValueError('Paste a LinkedIn /jobs/view/… or SEEK /job/… link.')
+
+
+def words(text):
+    return set(re.findall(r'[a-z0-9]+(?:[+#.][a-z0-9+#]*)?', text.lower()))
+
+
+def tailor(p, job, ai_draft=None):
+    """Extractive tailoring: keep facts verbatim; reorder skills, never invent claims."""
+    description = job['description'].lower()
+    skills = [s.strip() for s in re.split(r'[,\n]', p['skills']) if s.strip()]
+    matched = [s for s in skills if re.search(r'(?<!\w)' + re.escape(s.lower()) + r'(?!\w)', description)]
+    ordered = matched + [s for s in skills if s not in matched]
+    if ai_draft:
+        ordered = ai_draft['skills']
+    lines = [p['name']] + [x for x in (p['email'], p['phone'], p['location']) if x]
+    if p['headline']:
+        lines += ['', p['headline']]
+    for heading, value in [('PROFESSIONAL SUMMARY', ai_draft['summary'] if ai_draft else p['summary']), ('SKILLS', ', '.join(ordered)), ('WORK EXPERIENCE', p['experience']), ('EDUCATION', p['education']), ('CERTIFICATIONS', p.get('certifications', ''))]:
+        if value.strip():
+            lines += ['', heading, value.strip()]
+    # Chronology and attribution in the source experience remain intact.
+    return {'text': '\n'.join(lines), 'matched': matched, 'score': round(100 * len(matched) / len(skills)) if skills else 0,
+            'engine': 'qwen3:8b' if ai_draft else 'basic',
+            'format': 'ats-docx-v1',
+            'note': ('Written locally with Qwen. Review the generated summary for accuracy. ' if ai_draft else 'Skill overlap, not a qualification score. ') + 'Single-column DOCX with standard headings and selectable text. Experience and education are preserved verbatim.'}
+
+
+def prepare_ai(ids, p):
+    from local_ai import rewrite, cover_letter
+    try:
+        for jid in ids:
+            job = get_job(jid)
+            try:
+                draft = rewrite(p, job)
+                letter = cover_letter(p, job)
+                job.update(resume=tailor(p, job, draft), cover_letter=letter, profile_snapshot=p, status='ready', note='Qwen resume and cover letter ready. Review before applying.')
+            except Exception as exc:
+                job['note'] = str(exc) if isinstance(exc, ValueError) else 'Local tailoring failed. Try again or choose Basic tailoring.'
+            save_job(job)
+    finally:
+        AI_LOCK.release()
+
+
+def set_status(jid, status, note):
+    job = get_job(jid)
+    job.update(status=status, note=note, updated=datetime.now(timezone.utc).isoformat())
+    save_job(job)
+
+
+def write_documents(job):
+    resume = DATA / f'{job["id"]}.docx'
+    resume.write_bytes(docx(job['resume']['text']))
+    letter = None
+    if job.get('cover_letter'):
+        letter = DATA / f'{job["id"]}-cover-letter.docx'
+        letter.write_bytes(docx(job['cover_letter'], kind='cover_letter'))
+    return resume, letter
+
+
+def run_queue(ids, submit):
+    try:
+        from browser_agent import BrowserAgent
+        p = profile()
+        with BrowserAgent(DATA, STOP) as agent:
+            for jid in ids:
+                if STOP.is_set():
+                    break
+                job = get_job(jid)
+                if job['status'] != 'ready':
+                    continue
+                set_status(jid, 'running', 'Opening application in the agent browser…')
+                try:
+                    resume, letter = write_documents(job)
+                    agent.progress = lambda note: set_status(jid, 'running', note)
+                    status, note = agent.apply(job, job.get('profile_snapshot') or p, resume, submit, letter)
+                    set_status(jid, status, note)
+                except Exception as exc:
+                    set_status(jid, 'uncertain', f'Browser stopped: {type(exc).__name__}. Check the site before retrying.')
+    except Exception as exc:
+        for jid in ids:
+            if get_job(jid)['status'] in ('ready', 'running'):
+                set_status(jid, 'needs_input', f'Browser could not start ({type(exc).__name__}). Run the browser install steps in README.md.')
+    finally:
+        RUN_LOCK.release()
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+
+    def send(self, code, data, content_type='application/json', filename=None):
+        raw = json.dumps(data).encode() if content_type == 'application/json' else data
+        self.send_response(code)
+        self.send_header('Content-Type', content_type)
+        self.send_header('Content-Length', str(len(raw)))
+        self.send_header('Cache-Control', 'no-store')
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.send_header('Content-Security-Policy', "default-src 'self'; style-src 'self'; script-src 'self'; frame-ancestors 'none'; base-uri 'none'")
+        if filename:
+            self.send_header('Content-Disposition', f'attachment; filename="{filename}"')
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def allowed_host(self):
+        return self.headers.get('Host') in (f'127.0.0.1:{self.server.server_port}', f'localhost:{self.server.server_port}')
+
+    def do_GET(self):
+        if not self.allowed_host():
+            return self.send(403, {'error': 'Invalid host'})
+        path = urlparse(self.path).path
+        if path == '/api/state':
+            p = profile()
+            return self.send(200, {'profile': p, 'profiles': profiles(), 'jobs': [j for j in jobs() if j.get('profile_id', 'default') == p['id']], 'running': RUN_LOCK.locked(), 'preparing': AI_LOCK.locked(), 'token': TOKEN})
+        if path == '/api/ai':
+            from local_ai import status
+            return self.send(200, status())
+        if path == '/api/automation':
+            from automation import current
+            return self.send(200, current())
+        if path.startswith('/api/cover-letter/'):
+            try:
+                job = get_job(path.rsplit('/', 1)[1])
+                if not job.get('cover_letter'):
+                    raise ValueError('Prepare a cover letter with Local Qwen AI first.')
+                return self.send(200, docx(job['cover_letter'], kind='cover_letter'), 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'cover-letter.docx')
+            except ValueError as exc:
+                return self.send(404, {'error': str(exc)})
+        if path.startswith('/api/resume/'):
+            try:
+                job = get_job(path.rsplit('/', 1)[1])
+                if not job.get('resume'):
+                    raise ValueError('Prepare this resume first.')
+                if parse_qs(urlparse(self.path).query).get('format') == ['txt']:
+                    return self.send(200, plain_text(job['resume']['text']).encode('utf-8'), 'text/plain; charset=utf-8', 'resume.txt')
+                return self.send(200, docx(job['resume']['text']), 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'resume.docx')
+            except ValueError as exc:
+                return self.send(404, {'error': str(exc)})
+        files = {'/': ('index.html', 'text/html; charset=utf-8'), '/style.css': ('style.css', 'text/css'), '/ui.js': ('ui.js', 'text/javascript'), '/automation-ui.js': ('automation-ui.js', 'text/javascript'), '/profiles-ui.js': ('profiles-ui.js', 'text/javascript')}
+        if path in files:
+            name, mime = files[path]
+            return self.send(200, (ROOT / 'static' / name).read_bytes(), mime)
+        self.send(404, {'error': 'Not found'})
+
+    def do_POST(self):
+        with MUTATION_LOCK:
+            self.handle_post()
+
+    def handle_post(self):
+        if not self.allowed_host() or self.headers.get('X-Session-Token') != TOKEN:
+            return self.send(403, {'error': 'Refresh the app and try again.'})
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            if not 0 < length <= 300_000:
+                raise ValueError('Request is empty or too large.')
+            body = json.loads(self.rfile.read(length))
+            if not isinstance(body, dict):
+                raise ValueError('Expected an object.')
+            if urlparse(self.path).path == '/api/stop':
+                STOP.set()
+                return self.send(200, {'ok': True})
+            if RUN_LOCK.locked():
+                raise ValueError('Wait for the current browser run to finish before editing.')
+            if AI_LOCK.locked():
+                raise ValueError('Qwen is preparing resumes. Wait for it to finish before editing.')
+            path = urlparse(self.path).path
+            if path == '/api/profiles/create':
+                title = str(body.get('title', '')).strip()[:100]
+                if not title:
+                    raise ValueError('Give the profile a title, such as Rejan IT.')
+                base = profile() if body.get('copy_current') is True else DEFAULT_PROFILE
+                p = {**base, 'id': uuid.uuid4().hex, 'title': title}
+                with connect() as c:
+                    c.execute('INSERT INTO profiles VALUES (?,?)', (p['id'], json.dumps(p)))
+                    c.execute("INSERT OR REPLACE INTO settings VALUES ('active_profile', ?)", (p['id'],))
+            elif path == '/api/profiles/select':
+                p = profile(str(body.get('id', '')))
+                with connect() as c:
+                    c.execute("INSERT OR REPLACE INTO settings VALUES ('active_profile', ?)", (p['id'],))
+            elif path == '/api/profile':
+                previous = profile()
+                if body.get('id') and body['id'] != previous['id']:
+                    raise ValueError('Active profile changed. Refresh before saving.')
+                p = {k: str(body.get(k, '')).strip()[:30000] for k in DEFAULT_PROFILE if k != 'answers'}
+                p.update(id=previous['id'], title=(p['title'] or previous['title'])[:100])
+                answers = body.get('answers', {})
+                if not isinstance(answers, dict) or any(not isinstance(v, str) for v in answers.values()):
+                    raise ValueError('Saved answers must be a JSON object of question: answer strings.')
+                p['answers'] = answers
+                with connect() as c:
+                    c.execute('UPDATE profiles SET payload=? WHERE id=?', (json.dumps(p), p['id']))
+                for job in jobs():
+                    if job.get('profile_id', 'default') == p['id'] and job['status'] in ('ready', 'needs_input', 'saved'):
+                        job.update(status='saved', resume=None, cover_letter=None, assessment=None, profile_snapshot=None, note='Profile updated. Prepare fresh documents.')
+                        save_job(job)
+            elif path == '/api/jobs':
+                url, source = validate_url(str(body.get('url', '')))
+                title, company, description = [str(body.get(k, '')).strip() for k in ('title', 'company', 'description')]
+                if not title or not company or len(description) < 40:
+                    raise ValueError('Add a title, company and a job description of at least 40 characters.')
+                if any(j['url'] == url for j in jobs()):
+                    raise ValueError('This job is already in your workspace.')
+                save_job(dict(id=uuid.uuid4().hex, profile_id=profile()['id'], url=url, source=source, title=title, company=company, description=description, status='saved', note='', resume=None))
+            elif path == '/api/prepare':
+                p = profile()
+                if not p['name'] or not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+', p['email']) or not p['experience']:
+                    raise ValueError('Save your name, valid email and real experience in My profile first.')
+                selected = body.get('ids', [])
+                if not isinstance(selected, list) or not 1 <= len(selected) <= 10:
+                    raise ValueError('Choose between 1 and 10 jobs to prepare.')
+                selected = list(dict.fromkeys(selected))
+                for jid in selected:
+                    require_profile(get_job(jid), p)
+                selected = [jid for jid in selected if get_job(jid)['status'] not in ('submitted', 'uncertain', 'interview', 'rejected')]
+                if body.get('engine') == 'ollama':
+                    if not selected:
+                        raise ValueError('No eligible jobs selected.')
+                    if not AI_LOCK.acquire(blocking=False):
+                        raise ValueError('Qwen is already preparing resumes.')
+                    threading.Thread(target=prepare_ai, args=(selected, p), daemon=True).start()
+                    return self.send(200, {'ok': True})
+                for jid in selected:
+                    job = get_job(jid)
+                    if job['status'] in ('submitted', 'uncertain', 'interview', 'rejected'):
+                        continue
+                    job.update(resume=tailor(p, job), profile_snapshot=p, status='ready', note='Tailored resume ready.')
+                    save_job(job)
+            elif path == '/api/status':
+                job = get_job(body['id'])
+                require_profile(job, profile())
+                if body.get('status') not in STATUSES - {'ready'}:
+                    raise ValueError('Invalid status.')
+                job.update(status=body['status'], note='Status updated by you.')
+                save_job(job)
+            elif path == '/api/automation/start':
+                from automation import validate_config, run
+                p = profile()
+                config = validate_config(p, body)
+                if not RUN_LOCK.acquire(blocking=False):
+                    raise ValueError('A browser run is already active.')
+                STOP.clear()
+                threading.Thread(target=run, args=(p, config), daemon=True).start()
+            elif path == '/api/run':
+                ids = list(dict.fromkeys(body.get('ids', [])))
+                for jid in ids:
+                    require_profile(get_job(jid), profile())
+                if not ids or len(ids) > 10 or any(get_job(j)['status'] != 'ready' for j in ids):
+                    raise ValueError('Choose between 1 and 10 prepared applications.')
+                if not RUN_LOCK.acquire(blocking=False):
+                    raise ValueError('A browser run is already active.')
+                STOP.clear()
+                threading.Thread(target=run_queue, args=(ids, body.get('submit') is True), daemon=True).start()
+            else:
+                return self.send(404, {'error': 'Not found'})
+            self.send(200, {'ok': True})
+        except (ValueError, KeyError, TypeError, sqlite3.IntegrityError) as exc:
+            self.send(400, {'error': str(exc)})
+        except Exception:
+            self.send(500, {'error': 'Unexpected error. Your saved data remains in data/workspace.db.'})
+
+
+if __name__ == '__main__':
+    # Worker modules import app; share this exact module's locks and stop event.
+    sys.modules['app'] = sys.modules[__name__]
+    init()
+    port = int(os.environ.get('PORT', '8768'))
+    server = ThreadingHTTPServer(('127.0.0.1', port), Handler)
+    print(f'Jobflow is running at http://127.0.0.1:{port}', flush=True)
+    server.serve_forever()
