@@ -18,12 +18,8 @@ class BrowserAgent:
         from playwright.sync_api import sync_playwright
         self.playwright = sync_playwright().start()
         try:
-            channel = os.environ.get('BROWSER_CHANNEL') or None
-            if channel is None and not Path(self.playwright.chromium.executable_path).exists():
-                if Path('C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe').exists():
-                    channel = 'msedge'
             self.context = self.playwright.chromium.launch_persistent_context(
-                str(self.data / 'browser'), channel=channel, headless=False, viewport={'width': 1280, 'height': 900})
+                str(self.data / 'chrome-browser'), channel='chrome', headless=False, viewport={'width': 1280, 'height': 900})
             self.context.set_default_timeout(6000)
         except Exception:
             self.playwright.stop()

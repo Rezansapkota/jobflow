@@ -21,7 +21,7 @@ class BrowserTests(unittest.TestCase):
         cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
         cls.thread.start()
         cls.pw = sync_playwright().start()
-        cls.browser = cls.pw.chromium.launch(channel=os.environ.get('BROWSER_CHANNEL') or None)
+        cls.browser = cls.pw.chromium.launch(channel='chrome')
 
     @classmethod
     def tearDownClass(cls):

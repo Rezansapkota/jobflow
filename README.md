@@ -34,7 +34,7 @@ ollama pull qwen3:8b
 Keep Ollama running. Jobflow connects to its local service on port 11434; no cloud API key is needed.
 
 The dashboard, profile, job queue and DOCX export work without Playwright.
-On Windows, the browser assistant can also use an installed Microsoft Edge when the bundled Chromium is unavailable. Set `BROWSER_CHANNEL=msedge` to select it explicitly.
+Google Chrome is used for the dashboard and all agent browser sessions, including LinkedIn and SEEK. The launcher opens the dashboard in Chrome. Install Google Chrome first; Jobflow does not change your system-wide default browser.
 
 ## Use
 
@@ -49,9 +49,9 @@ Automatic mode attempts LinkedIn Easy Apply and SEEK application forms. It fills
 
 ## Account sign-in
 
-In **My profile / Job site accounts**, save your LinkedIn and SEEK profile links (optional). Blank links open the site's account page. Start **Job agent**; it opens each selected account in a visible browser. Enter your login ID/password directly on the site, complete verification, check the account, then click **Account ready — continue** in Jobflow. Confirm each selected site once per run; the agent then searches using your saved target roles and location, assesses suitability with Qwen, creates an ATS-friendly resume and cover letter, and attempts supported applications within your limits.
+In **My profile / Job site accounts**, save your LinkedIn and SEEK profile links (optional). Blank links open the site's account page. Start **Job agent**; it opens each selected account in a visible browser. Enter your login ID/password directly on the site, complete verification, check the account, then click **Account ready â€” continue** in Jobflow. Confirm each selected site once per run; the agent then searches using your saved target roles and location, assesses suitability with Qwen, creates an ATS-friendly resume and cover letter, and attempts supported applications within your limits.
 
-Profile links alone do not sign you in or import your career history. Complete the career profile in Jobflow. Passwords are not collected by Jobflow or sent to Ollama. Browser sessions are stored locally under `data/browser-profiles/<profile-id>/browser/`, separately for each career profile, and excluded from Git. Treat this local folder as private because it contains signed-in sessions. New/copied profiles require their own sign-in; older shared sessions are not reused. Account confirmation times out after five minutes, and Cancel run stops before discovery. Site verification or unknown application questions may still need your input.
+Profile links alone do not sign you in or import your career history. Complete the career profile in Jobflow. Passwords are not collected by Jobflow or sent to Ollama. Browser sessions are stored locally under `data/browser-profiles/<profile-id>/chrome-browser/`, separately for each career profile, and excluded from Git. Treat this local folder as private because it contains signed-in sessions. New/copied profiles require their own sign-in; older shared sessions are not reused. Account confirmation times out after five minutes, and Cancel run stops before discovery. Site verification or unknown application questions may still need your input.
 
 ## Job agent
 
@@ -110,3 +110,5 @@ node --check static/ui.js
 ## Review before submission
 
 Job agent searches and prepares documents, then leaves jobs in the pipeline for review. Open each job to preview and download its tailored resume and cover letter. Click **I reviewed both documents - approve**, then select the approved job and use **Run selected** with **Automatic submission**. The server blocks automatic runs without approval of the current documents and attachments. Regenerating documents or changing application facts requires a fresh review. Manual handoff remains under your control.
+
+Chrome keeps a separate session for each career profile. Sign in once in its new agent window. Older Edge/Chromium sessions are not copied. Run `python start.py --port 8775` to open the updated local dashboard in Chrome.

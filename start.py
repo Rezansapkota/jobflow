@@ -6,6 +6,8 @@ from pathlib import Path
 import subprocess
 import sys
 import urllib.request
+import threading
+import chrome_browser
 
 
 def main():
@@ -22,11 +24,16 @@ def main():
             state = json.load(response)
             if isinstance(state, dict) and 'status' in state and 'events' in state:
                 print(f'Jobflow is already running at {url}')
+                try:
+                    chrome_browser.open_dashboard(url)
+                except (OSError, ValueError) as exc:
+                    print(f'Open {url} in Google Chrome. {exc}')
                 return 0
     except (OSError, ValueError):
         pass
     env = {**os.environ, 'PORT': str(args.port)}
     print('Keep this terminal open while using Jobflow. Press Ctrl+C to stop it.', flush=True)
+    threading.Thread(target=chrome_browser.when_ready, args=(url,), daemon=True).start()
     try:
         return subprocess.call([sys.executable, str(root / 'app.py')], cwd=root, env=env)
     except KeyboardInterrupt:

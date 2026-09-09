@@ -15,7 +15,7 @@ def search_check():
     from discovery import search_url, extract_job
     from app import validate_url
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(channel='msedge')
+        browser = pw.chromium.launch(channel='chrome')
         for source in ['LinkedIn', 'SEEK']:
             page = browser.new_page()
             try:

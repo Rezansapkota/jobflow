@@ -100,10 +100,11 @@ class CertificateTests(unittest.TestCase):
         thread.start()
         try:
             with patch.object(cert, 'parse_details', return_value=DETAILS.copy()), sync_playwright() as pw:
-                browser = pw.chromium.launch(channel=os.environ.get('BROWSER_CHANNEL') or None)
+                browser = pw.chromium.launch(channel='chrome')
                 page = browser.new_page()
                 page.goto(f'http://127.0.0.1:{server.server_port}')
                 page.get_by_role('button', name='My profile', exact=False).first.click()
+                expect(page.get_by_label('Full name', exact=True)).to_have_value(self.profile['name'])
                 page.get_by_label('Certificate file', exact=True).set_input_files({'name': 'first-aid.docx', 'mimeType': cert.ALLOWED['.docx'], 'buffer': app.docx(TEXT)})
                 page.get_by_role('button', name='Upload and read certificate').click()
                 expect(page.get_by_label('Certification section used in applications')).to_have_value(__import__('re').compile('First Aid Certificate'), timeout=15000)
