@@ -32,6 +32,18 @@ class BrowserTests(unittest.TestCase):
         cls.override.stop()
         cls.temp.cleanup()
 
+    def test_account_confirmation_banner(self):
+        import accounts
+        page = self.browser.new_page()
+        with patch.object(accounts, 'PENDING', {'id': 'test-request', 'profile_id': app.profile()['id'], 'source': 'SEEK'}):
+            accounts.CONFIRMED.clear()
+            page.goto(f'http://127.0.0.1:{self.server.server_port}')
+            page.locator('#account-continue').click()
+            page.get_by_text('Account confirmation sent.', exact=False).wait_for()
+            self.assertTrue(accounts.CONFIRMED.is_set())
+        accounts.CONFIRMED.clear()
+        page.close()
+
     def test_profile_to_resume_workflow(self):
         page = self.browser.new_page(viewport={'width': 1440, 'height': 1000})
         errors = []

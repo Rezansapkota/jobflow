@@ -59,8 +59,10 @@ def run(profile, config):
         write(record)
     try:
         event('Starting browser discovery. Search preferences and profile are fixed for this run.')
-        with BrowserAgent(app.DATA, app.STOP) as agent:
+        from accounts import browser_data, prepare
+        with BrowserAgent(browser_data(profile), app.STOP) as agent:
             agent.progress = event
+            prepare(agent, profile, config['sources'])
             seen = {job['url'] for job in app.jobs()}
             for found in discover(agent, profile, config, seen):
                 if app.STOP.is_set():

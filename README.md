@@ -47,6 +47,12 @@ On Windows, the browser assistant can also use an installed Microsoft Edge when 
 
 Automatic mode attempts LinkedIn Easy Apply and SEEK application forms. It fills recognised contact fields and exact saved question answers, uploads the resume to a recognised resume field, advances identifiable steps, and clicks an identifiable submit button. Unknown questions, consent controls, login, verification and unsupported steps hand control to you. This connector is experimental: site layouts vary and live submission has not been tested. A click alone never counts as a successful application; unrecognised confirmation leaves the application marked **Check submission**. Check the site before resetting it to Saved and preparing again.
 
+## Account sign-in
+
+In **My profile / Job site accounts**, save your LinkedIn and SEEK profile links (optional). Blank links open the site's account page. Start **Job agent**; it opens each selected account in a visible browser. Enter your login ID/password directly on the site, complete verification, check the account, then click **Account ready — continue** in Jobflow. Confirm each selected site once per run; the agent then searches using your saved target roles and location, assesses suitability with Qwen, creates an ATS-friendly resume and cover letter, and attempts supported applications within your limits.
+
+Profile links alone do not sign you in or import your career history. Complete the career profile in Jobflow. Passwords are not collected by Jobflow or sent to Ollama. Browser sessions are stored locally under `data/browser-profiles/<profile-id>/browser/`, separately for each career profile, and excluded from Git. Treat this local folder as private because it contains signed-in sessions. New/copied profiles require their own sign-in; older shared sessions are not reused. Account confirmation times out after five minutes, and Cancel run stops before discovery. Site verification or unknown application questions may still need your input.
+
 ## Job agent
 
 The app is reusable for any applicant. Each local workspace supports multiple named career profiles, but these are not separate authenticated user accounts. No applicant facts are built into the agent.

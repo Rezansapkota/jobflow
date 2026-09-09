@@ -72,7 +72,8 @@ class BrowserAgent:
             # Manual mode never clicks form controls or uploads files.
             return self.handoff(page, 'Manual mode: complete the application in the browser; your resume is in data/' + resume.name + '.')
         if page.locator('input[type=password]').count() or re.search(r'/login|/checkpoint|/authwall', page.url):
-            return self.handoff(page, 'Sign in and complete this application manually. Your session is saved for the next run.')
+            from discovery import wait_for_access
+            wait_for_access(self, page, job['url'])
         if job['source'] == 'LinkedIn':
             button = page.get_by_role('button', name=re.compile(r'^Easy Apply(?:\s|$)', re.I)).first
         else:

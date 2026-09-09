@@ -84,7 +84,7 @@ def challenged(page):
                 or page.locator('input[type="password"]:visible, iframe[src*="captcha"]:visible').count())
 
 
-def wait_for_access(agent, page):
+def wait_for_access(agent, page, target=None):
     if not challenged(page):
         return
     agent.progress('Sign in or complete verification in the browser. Discovery resumes afterwards (up to 5 minutes).')
@@ -93,6 +93,10 @@ def wait_for_access(agent, page):
             raise ValueError('Discovery stopped during sign-in.')
         page.wait_for_timeout(2000)
         if not challenged(page):
+            if target:
+                page.goto(target, wait_until='domcontentloaded', timeout=45000)
+                if challenged(page):
+                    continue
             return
     raise ValueError('Sign-in or verification was not completed. Start another run after signing in.')
 
@@ -111,7 +115,7 @@ def discover(agent, profile, config, seen):
                 try:
                     target = search_url(source, role, profile['search_location'], index)
                     search.goto(target, wait_until='domcontentloaded', timeout=45000)
-                    wait_for_access(agent, search)
+                    wait_for_access(agent, search, target)
                     search.wait_for_timeout(2000)
                     # Scroll only loaded results. Never repeatedly hammer blocked pages.
                     for _ in range(2):
@@ -137,7 +141,7 @@ def discover(agent, profile, config, seen):
                         detail = agent.context.new_page()
                         try:
                             detail.goto(url, wait_until='domcontentloaded', timeout=45000)
-                            wait_for_access(agent, detail)
+                            wait_for_access(agent, detail, url)
                             detail.wait_for_timeout(1500)
                             yield extract_job(detail, source, url)
                         except Exception as exc:

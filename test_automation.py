@@ -36,7 +36,7 @@ class AutomationTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.patches = [patch.object(app, 'DB', Path(self.temp.name) / 'test.db'), patch.object(app, 'DATA', Path(self.temp.name)),
-                        patch('browser_agent.BrowserAgent', FakeBrowser), patch('discovery.discover', return_value=iter([JOB])),
+                        patch('browser_agent.BrowserAgent', FakeBrowser), patch('accounts.prepare'), patch('discovery.discover', return_value=iter([JOB])),
                         patch('local_ai.assess', return_value=MATCH.copy()),
                         patch('local_ai.rewrite', return_value={'summary': 'Service assistant with customer service experience.', 'skills': ['Customer service', 'Excel']}),
                         patch('local_ai.cover_letter', return_value='Dear Hiring Manager,\nFictional test letter.\nAlex Example')]
@@ -64,6 +64,13 @@ class AutomationTests(unittest.TestCase):
         self.assertEqual(len(FakeBrowser.attempts), 1)
         self.assertEqual(automation.current()['submitted'], 1)
         self.assertIn('cover_letter', job)
+
+    def test_account_failure_blocks_discovery_and_submission(self):
+        with patch('accounts.prepare', side_effect=ValueError('Sign in first')), patch('discovery.discover') as discover:
+            self.run_pipeline(True)
+        discover.assert_not_called()
+        self.assertEqual(FakeBrowser.attempts, [])
+        self.assertEqual(automation.current()['status'], 'failed')
 
     def test_prepare_mode_does_not_apply(self):
         self.run_pipeline(False)

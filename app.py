@@ -24,7 +24,7 @@ STOP = threading.Event()
 AI_LOCK = threading.Lock()
 MUTATION_LOCK = threading.Lock()
 STATUSES = {'saved', 'ready', 'needs_input', 'submitted', 'uncertain', 'rejected', 'interview'}
-DEFAULT_PROFILE = dict(title='Default profile', name='', email='', phone='', location='', headline='', summary='', skills='', experience='', education='', certifications='', roles='', search_location='', work_rights='', constraints='', answers={})
+DEFAULT_PROFILE = dict(title='Default profile', linkedin_url='', seek_url='', name='', email='', phone='', location='', headline='', summary='', skills='', experience='', education='', certifications='', roles='', search_location='', work_rights='', constraints='', answers={})
 
 
 @contextmanager
@@ -194,7 +194,10 @@ def run_queue(ids, submit):
     try:
         from browser_agent import BrowserAgent
         p = profile()
-        with BrowserAgent(DATA, STOP) as agent:
+        from accounts import browser_data, prepare
+        with BrowserAgent(browser_data(p), STOP) as agent:
+            if submit:
+                prepare(agent, p, list(dict.fromkeys(get_job(jid)['source'] for jid in ids)))
             for jid in ids:
                 if STOP.is_set():
                     break
@@ -244,7 +247,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/api/state':
             p = profile()
             from certificates import rows, effective_profile
-            return self.send(200, {'profile': p, 'profiles': profiles(), 'certificates': rows(p['id']), 'combined_certifications': effective_profile(p)['certifications'], 'jobs': [j for j in jobs() if j.get('profile_id', 'default') == p['id']], 'running': RUN_LOCK.locked(), 'preparing': AI_LOCK.locked(), 'token': TOKEN})
+            return self.send(200, {'profile': p, 'profiles': profiles(), 'certificates': rows(p['id']), 'combined_certifications': effective_profile(p)['certifications'], 'jobs': [j for j in jobs() if j.get('profile_id', 'default') == p['id']], 'running': RUN_LOCK.locked(), 'preparing': AI_LOCK.locked(), 'token': TOKEN, 'account_pending': __import__('accounts').pending()})
         if path.startswith('/api/certificates/file/'):
             try:
                 from certificates import get, file_path, ALLOWED
@@ -276,7 +279,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, docx(job['resume']['text']), 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'resume.docx')
             except ValueError as exc:
                 return self.send(404, {'error': str(exc)})
-        files = {'/': ('index.html', 'text/html; charset=utf-8'), '/style.css': ('style.css', 'text/css'), '/ui.js': ('ui.js', 'text/javascript'), '/automation-ui.js': ('automation-ui.js', 'text/javascript'), '/profiles-ui.js': ('profiles-ui.js', 'text/javascript'), '/certificates-ui.js': ('certificates-ui.js', 'text/javascript')}
+        files = {'/accounts-ui.js': ('accounts-ui.js', 'text/javascript'), '/': ('index.html', 'text/html; charset=utf-8'), '/style.css': ('style.css', 'text/css'), '/ui.js': ('ui.js', 'text/javascript'), '/automation-ui.js': ('automation-ui.js', 'text/javascript'), '/profiles-ui.js': ('profiles-ui.js', 'text/javascript'), '/certificates-ui.js': ('certificates-ui.js', 'text/javascript')}
         if path in files:
             name, mime = files[path]
             return self.send(200, (ROOT / 'static' / name).read_bytes(), mime)
@@ -299,6 +302,10 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError('Expected an object.')
             if urlparse(self.path).path == '/api/stop':
                 STOP.set()
+                return self.send(200, {'ok': True})
+            if urlparse(self.path).path == '/api/accounts/confirm':
+                from accounts import confirm
+                confirm(body.get('id'), profile()['id'])
                 return self.send(200, {'ok': True})
             if RUN_LOCK.locked():
                 raise ValueError('Wait for the current browser run to finish before editing.')
@@ -356,6 +363,9 @@ class Handler(BaseHTTPRequestHandler):
                 if not isinstance(answers, dict) or any(not isinstance(v, str) for v in answers.values()):
                     raise ValueError('Saved answers must be a JSON object of question: answer strings.')
                 p['answers'] = answers
+                from accounts import account_url
+                for source in ('LinkedIn', 'SEEK'):
+                    account_url(p, source)
                 with connect() as c:
                     c.execute('UPDATE profiles SET payload=? WHERE id=?', (json.dumps(p), p['id']))
                 invalidate_profile(p['id'])
