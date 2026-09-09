@@ -106,3 +106,7 @@ node --check static/ui.js
 `app.py` contains persistence, tailoring and HTTP endpoints. `browser_agent.py` contains the browser connector. `static/` contains the interface. Set `PORT` to use another local port.
 
 `discovery.py` extracts search results and descriptions; `automation.py` orchestrates bounded runs; `local_ai.py` calls Ollama. Tests use fictional profiles and intercepted local pages, never live submissions. Optional `python smoke_checks.py` checks public search pages without submitting; `python smoke_checks.py --model` exercises matching and cover-letter generation with a fictional profile without saving it to the workspace.
+
+## Review before submission
+
+Job agent searches and prepares documents, then leaves jobs in the pipeline for review. Open each job to preview and download its tailored resume and cover letter. Click **I reviewed both documents - approve**, then select the approved job and use **Run selected** with **Automatic submission**. The server blocks automatic runs without approval of the current documents and attachments. Regenerating documents or changing application facts requires a fresh review. Manual handoff remains under your control.

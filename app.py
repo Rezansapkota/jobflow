@@ -166,7 +166,7 @@ def prepare_ai(ids, p):
             try:
                 draft = rewrite(p, job)
                 letter = cover_letter(p, job)
-                job.update(resume=tailor(p, job, draft), cover_letter=letter, profile_snapshot=p, certificate_ids=select_for_job(p, job), status='ready', note='Qwen resume and cover letter ready. Review before applying.')
+                job.update(approved_documents=None, resume=tailor(p, job, draft), cover_letter=letter, profile_snapshot=p, certificate_ids=select_for_job(p, job), status='ready', note='Qwen resume and cover letter ready. Review before applying.')
             except Exception as exc:
                 job['note'] = str(exc) if isinstance(exc, ValueError) else 'Local tailoring failed. Try again or choose Basic tailoring.'
             save_job(job)
@@ -204,6 +204,9 @@ def run_queue(ids, submit):
                 job = get_job(jid)
                 if job['status'] != 'ready':
                     continue
+                if submit:
+                    from review import require_approval
+                    require_approval(job)
                 set_status(jid, 'running', 'Opening application in the agent browser…')
                 try:
                     resume, letter = write_documents(job)
@@ -247,7 +250,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/api/state':
             p = profile()
             from certificates import rows, effective_profile
-            return self.send(200, {'profile': p, 'profiles': profiles(), 'certificates': rows(p['id']), 'combined_certifications': effective_profile(p)['certifications'], 'jobs': [j for j in jobs() if j.get('profile_id', 'default') == p['id']], 'running': RUN_LOCK.locked(), 'preparing': AI_LOCK.locked(), 'token': TOKEN, 'account_pending': __import__('accounts').pending()})
+            return self.send(200, {'profile': p, 'profiles': profiles(), 'certificates': rows(p['id']), 'combined_certifications': effective_profile(p)['certifications'], 'jobs': [{**j, 'review_token': __import__('review').fingerprint(j), 'documents_approved': __import__('review').approved(j)} for j in jobs() if j.get('profile_id', 'default') == p['id']], 'running': RUN_LOCK.locked(), 'preparing': AI_LOCK.locked(), 'token': TOKEN, 'account_pending': __import__('accounts').pending()})
         if path.startswith('/api/certificates/file/'):
             try:
                 from certificates import get, file_path, ALLOWED
@@ -402,8 +405,17 @@ class Handler(BaseHTTPRequestHandler):
                     if job['status'] in ('submitted', 'uncertain', 'interview', 'rejected'):
                         continue
                     from certificates import select_for_job
-                    job.update(resume=tailor(p, job), profile_snapshot=p, certificate_ids=select_for_job(p, job), status='ready', note='Tailored resume ready.')
+                    job.update(approved_documents=None, resume=tailor(p, job), profile_snapshot=p, certificate_ids=select_for_job(p, job), status='ready', note='Tailored resume ready.')
                     save_job(job)
+            elif path == '/api/review/approve':
+                from review import fingerprint
+                job = get_job(body['id'])
+                require_profile(job, profile())
+                token = fingerprint(job)
+                if job['status'] != 'ready' or not token or token != body.get('review_token'):
+                    raise ValueError('Documents changed or are incomplete. Reopen the job and review both documents.')
+                job.update(approved_documents=token, note='Documents approved. Select this job and run automatic submission when ready.')
+                save_job(job)
             elif path == '/api/status':
                 job = get_job(body['id'])
                 require_profile(job, profile())
@@ -423,6 +435,10 @@ class Handler(BaseHTTPRequestHandler):
                 ids = list(dict.fromkeys(body.get('ids', [])))
                 for jid in ids:
                     require_profile(get_job(jid), profile())
+                if body.get('submit') is True:
+                    from review import require_approval
+                    for jid in ids:
+                        require_approval(get_job(jid))
                 if not ids or len(ids) > 10 or any(get_job(j)['status'] != 'ready' for j in ids):
                     raise ValueError('Choose between 1 and 10 prepared applications.')
                 if not RUN_LOCK.acquire(blocking=False):

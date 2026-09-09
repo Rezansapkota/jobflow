@@ -57,12 +57,12 @@ class AutomationTests(unittest.TestCase):
         automation.run(PROFILE, config)
         self.assertFalse(app.RUN_LOCK.locked())
 
-    def test_complete_pipeline_creates_both_documents_and_submits(self):
+    def test_complete_pipeline_requires_review_even_when_submit_requested(self):
         self.run_pipeline(True)
         job = app.jobs()[0]
-        self.assertEqual(job['status'], 'submitted')
-        self.assertEqual(len(FakeBrowser.attempts), 1)
-        self.assertEqual(automation.current()['submitted'], 1)
+        self.assertEqual(job['status'], 'ready')
+        self.assertEqual(len(FakeBrowser.attempts), 0)
+        self.assertEqual(automation.current()['submitted'], 0)
         self.assertIn('cover_letter', job)
 
     def test_account_failure_blocks_discovery_and_submission(self):

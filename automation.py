@@ -91,20 +91,7 @@ def run(profile, config):
                     record['prepared'] += 1
                     if app.STOP.is_set():
                         break
-                    if config['submit'] and record['attempted'] < config['max_applications']:
-                        record['attempted'] += 1
-                        # Persist the uncertain boundary before any browser action.
-                        app.set_status(job['id'], 'running', 'Automatic application in progress.')
-                        event(f'Applying to {job["title"]} ({record["attempted"]}/{config["max_applications"]}).')
-                        resume_path, letter_path = app.write_documents(job)
-                        status, note = agent.apply(job, profile, resume_path, True, letter_path)
-                        app.set_status(job['id'], status, note)
-                        if status == 'submitted':
-                            record['submitted'] += 1
-                        event(f'{job["title"]}: {status}. {note}')
-                        if record['attempted'] >= config['max_applications']:
-                            event('Application limit reached for this run.')
-                            break
+                    event(f'{job["title"]}: awaiting your document review in the pipeline. Approve both documents before running submission.')
                 except Exception as exc:
                     latest = app.get_job(job['id'])
                     latest.update(status='uncertain' if latest['status'] == 'running' else 'needs_input', note=f'Automation stopped for this job: {str(exc)[:350]}')

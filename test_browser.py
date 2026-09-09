@@ -44,6 +44,20 @@ class BrowserTests(unittest.TestCase):
         accounts.CONFIRMED.clear()
         page.close()
 
+    def test_review_previews_both_documents_and_records_approval(self):
+        from review import approved
+        job = {'id': 'review-ui', 'profile_id': app.profile()['id'], 'url': 'https://www.seek.com.au/job/98765431', 'title': 'Review test role', 'company': 'Fictional', 'source': 'SEEK', 'description': 'Fictional job description', 'status': 'ready', 'note': 'Review required', 'resume': {'text': 'Resume preview example', 'note': 'Test draft', 'matched': []}, 'cover_letter': 'Cover letter preview example'}
+        app.save_job(job)
+        page = self.browser.new_page()
+        page.goto(f'http://127.0.0.1:{self.server.server_port}')
+        page.get_by_role('button', name='Review test role', exact=True).click()
+        page.get_by_text('Resume preview example', exact=True).wait_for()
+        page.get_by_text('Cover letter preview example', exact=True).wait_for()
+        page.get_by_role('button', name='I reviewed both documents - approve').click()
+        page.get_by_role('button', name='Documents approved', exact=True).wait_for()
+        self.assertTrue(approved(app.get_job(job['id'])))
+        page.close()
+
     def test_profile_to_resume_workflow(self):
         page = self.browser.new_page(viewport={'width': 1440, 'height': 1000})
         errors = []

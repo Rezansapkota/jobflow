@@ -65,6 +65,27 @@ class ProfileTests(unittest.TestCase):
         self.post('/api/profile', {**app.profile(), 'skills': 'Updated skill'})
         self.assertIsNone(app.get_job('draft')['resume'])
 
+    def test_submission_requires_current_document_approval(self):
+        from review import fingerprint, approved
+        job = {'id': 'review', 'url': 'https://www.seek.com.au/job/98765432', 'profile_id': app.profile()['id'], 'status': 'ready', 'resume': {'text': 'Resume'}, 'cover_letter': 'Letter'}
+        app.save_job(job)
+        with self.assertRaises(urllib.error.HTTPError) as err:
+            self.post('/api/run', {'ids': ['review'], 'submit': True})
+        self.assertEqual(err.exception.code, 400)
+        err.exception.close()
+        self.assertFalse(app.RUN_LOCK.locked())
+        self.post('/api/review/approve', {'id': 'review', 'review_token': fingerprint(job)})
+        self.assertTrue(approved(app.get_job('review')))
+        old_token = fingerprint(job)
+        job = app.get_job('review')
+        job['cover_letter'] = 'Revised letter'
+        app.save_job(job)
+        self.assertFalse(approved(job))
+        with self.assertRaises(urllib.error.HTTPError) as err:
+            self.post('/api/review/approve', {'id': 'review', 'review_token': old_token})
+        self.assertEqual(err.exception.code, 400)
+        err.exception.close()
+
     def test_legacy_profile_is_migrated_once(self):
         with app.connect() as c:
             c.execute('DELETE FROM profiles')

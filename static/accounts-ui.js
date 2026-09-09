@@ -48,3 +48,34 @@ $('#agent-form').onsubmit = async e => {
     try { await saveProfileChanges(); await startWithSavedProfile(e); }
     catch (err) { toast(err.message); }
 };
+
+const beforeReviewDetail = detail;
+detail = function(id) {
+    beforeReviewDetail(id);
+    const job = state.jobs.find(j => j.id === id);
+    const panel = document.createElement('div');
+    panel.className = 'panel';
+    if (job.status === 'ready' && job.resume && job.cover_letter) {
+        panel.innerHTML = '<h3>Review before submission</h3><p>Read the tailored resume and cover letter above. Approval applies to these documents and attachments. After approval, select this job and run automatic submission.</p>';
+        const approve = document.createElement('button');
+        approve.textContent = job.documents_approved ? 'Documents approved' : 'I reviewed both documents - approve';
+        approve.disabled = Boolean(job.documents_approved || state.running || state.preparing);
+        approve.onclick = async () => {
+            try {
+                await api('/api/review/approve', {id, review_token: job.review_token});
+                await refresh();
+                approve.textContent = 'Documents approved'; approve.disabled = true;
+                toast('Approved. Select this job and run it when ready to submit.');
+            } catch (err) { toast(err.message); }
+        };
+        panel.appendChild(approve);
+    } else if (!job.cover_letter || !job.resume) {
+        panel.textContent = 'Build both a resume and cover letter before reviewing and approving submission.';
+    }
+    $('#detail-content').appendChild(panel);
+};
+const runMode = $('#agent-form select[name=submit]');
+runMode.innerHTML = '<option value="false">Search and prepare for my review</option>';
+const reviewNotice = document.createElement('p');
+reviewNotice.textContent = 'New applications stop in the pipeline for your review. Open each job to read its resume and cover letter, approve them, then use Run selected to submit.';
+$('#agent-form').prepend(reviewNotice);
