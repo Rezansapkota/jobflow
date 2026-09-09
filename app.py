@@ -368,7 +368,9 @@ class Handler(BaseHTTPRequestHandler):
                     account_url(p, source)
                 with connect() as c:
                     c.execute('UPDATE profiles SET payload=? WHERE id=?', (json.dumps(p), p['id']))
-                invalidate_profile(p['id'])
+                document_fields = set(DEFAULT_PROFILE) - {'title', 'linkedin_url', 'seek_url'}
+                if any(p.get(key) != previous.get(key) for key in document_fields):
+                    invalidate_profile(p['id'])
             elif path == '/api/jobs':
                 url, source = validate_url(str(body.get('url', '')))
                 title, company, description = [str(body.get(k, '')).strip() for k in ('title', 'company', 'description')]

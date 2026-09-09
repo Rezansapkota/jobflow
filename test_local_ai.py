@@ -23,6 +23,7 @@ class LocalAITests(unittest.TestCase):
         self.assertIn('Customer service, Excel', result['text'])
         self.assertEqual(result['engine'], 'qwen3:8b')
         body = request.call_args.args[1]
+        self.assertEqual(body['format']['properties']['skills']['items']['enum'], ['Excel', 'Customer service'])
         self.assertFalse(body['stream'])
         self.assertFalse(body['think'])
         self.assertNotIn('email', json.loads(body['messages'][1]['content'])['candidate_facts'])

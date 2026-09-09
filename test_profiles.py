@@ -55,6 +55,16 @@ class ProfileTests(unittest.TestCase):
         self.assertNotIn('First Aid', app.tailor(app.profile(), {'description': 'IT Support'})['text'])
         self.assertIn('First Aid', app.profile(care_id)['certifications'])
 
+    def test_unchanged_profile_and_account_links_preserve_documents(self):
+        p = app.profile()
+        app.save_job({'id': 'draft', 'url': 'https://www.seek.com.au/job/98765432', 'profile_id': p['id'], 'status': 'ready', 'resume': {'text': 'Existing draft'}, 'cover_letter': 'Existing letter'})
+        self.post('/api/profile', p)
+        self.assertEqual(app.get_job('draft')['status'], 'ready')
+        self.post('/api/profile', {**p, 'title': 'New title', 'linkedin_url': 'https://www.linkedin.com/in/example/'})
+        self.assertEqual(app.get_job('draft')['cover_letter'], 'Existing letter')
+        self.post('/api/profile', {**app.profile(), 'skills': 'Updated skill'})
+        self.assertIsNone(app.get_job('draft')['resume'])
+
     def test_legacy_profile_is_migrated_once(self):
         with app.connect() as c:
             c.execute('DELETE FROM profiles')

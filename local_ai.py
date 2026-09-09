@@ -28,9 +28,12 @@ def status():
 
 
 def rewrite(profile, job):
+    import re
+    original = list(dict.fromkeys(s.strip() for s in re.split(r'[,\n]', profile['skills']) if s.strip()))
+    skill_items = {'type': 'string', 'enum': original} if original else {'type': 'string'}
     schema = {'type': 'object', 'properties': {
         'summary': {'type': 'string'},
-        'skills': {'type': 'array', 'items': {'type': 'string'}},
+        'skills': {'type': 'array', 'items': skill_items, **({'maxItems': 0} if not original else {})},
     }, 'required': ['summary', 'skills'], 'additionalProperties': False}
     # Contact information and saved screening answers are unnecessary for tailoring.
     facts = {k: profile.get(k, '') for k in ('headline', 'summary', 'skills', 'experience', 'education', 'certifications')}
@@ -53,8 +56,6 @@ def rewrite(profile, job):
             raise ValueError()
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError('Qwen returned an invalid resume draft. Try again or choose Basic tailoring.') from exc
-    import re
-    original = list(dict.fromkeys(s.strip() for s in re.split(r'[,\n]', profile['skills']) if s.strip()))
     if any(s not in original for s in result['skills']):
         raise ValueError('Qwen suggested a skill outside your profile. The draft was discarded; try again or choose Basic tailoring.')
     result['skills'] = list(dict.fromkeys(result['skills'] + original))
