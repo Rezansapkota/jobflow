@@ -104,8 +104,8 @@ class BrowserTests(unittest.TestCase):
     def test_agent_screen_validates_profile_and_is_responsive(self):
         page = self.browser.new_page(viewport={'width': 1280, 'height': 950})
         page.goto(f'http://127.0.0.1:{self.server.server_port}')
-        page.get_by_role('button', name='Job agent', exact=False).click()
-        page.get_by_role('button', name='Start job agent', exact=False).click()
+        page.get_by_role('button', name='Job search', exact=False).click()
+        page.get_by_role('button', name='Search LinkedIn + SEEK', exact=False).click()
         page.locator('#toast').get_by_text('Complete name in My profile', exact=False).wait_for()
         page.screenshot(path=str(app.DATA / 'job-agent.png'), full_page=True)
         page.set_viewport_size({'width': 390, 'height': 844})

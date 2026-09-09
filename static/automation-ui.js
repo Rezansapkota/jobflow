@@ -7,18 +7,18 @@ automationNav.onclick = () => { view('automation'); $('#breadcrumb').textContent
 const agentSection = document.createElement('section');
 agentSection.id = 'automation'; agentSection.className = 'view'; agentSection.hidden = true;
 agentSection.innerHTML = `<div class="eyebrow">FROM SEARCH TO APPLICATION</div>
-<h1>Let your job agent do the work.</h1>
+<h1>One search. More possibilities.</h1>
 <p class="muted">Search in your browser, match against your profile, and prepare a resume and cover letter with local Qwen.</p>
 <form id="agent-form" class="panel">
 <p>Target roles and location come from <button id="agent-profile" type="button" class="text-button">My profile ↗</button>. Separate multiple roles with commas.</p>
-<div class="grid"><label>Job sites<select name="source"><option value="both">LinkedIn + SEEK</option><option value="LinkedIn">LinkedIn</option><option value="SEEK">SEEK</option></select></label>
+<div class="grid"><label>Job sites<select name="source"><option value="both">LinkedIn + SEEK</option></select></label>
 <label>Run mode<select name="submit"><option value="true">Search, prepare and apply</option><option value="false">Search and prepare only</option></select></label></div>
 <div class="grid"><label>Maximum jobs to inspect<input name="max_jobs" type="number" min="1" max="30" value="10" required></label>
 <label>Maximum application attempts<input name="max_applications" type="number" min="1" max="10" value="3" required></label>
 <label>Minimum Qwen match score<input name="min_score" type="number" min="1" max="100" value="80" required></label>
 <label>Search pages per site and role<input name="pages" type="number" min="1" max="3" value="1" required></label></div>
 <p class="muted">A score is an AI estimate. Mandatory requirements, target role and location must also match. Unknown eligibility needs your input. Sign-in, verification and unsupported forms pause in the browser.</p>
-<button type="submit" class="primary" id="agent-start">Start job agent ↗</button>
+<button type="submit" class="primary" id="agent-start">Search LinkedIn + SEEK ↗</button>
 <button type="button" id="agent-stop">Stop run</button>
 </form><div class="panel"><h2>Run activity</h2><p id="agent-summary">No run started.</p><ol id="agent-events" class="agent-events"></ol></div>`;
 $('footer').before(agentSection);
@@ -31,7 +31,7 @@ $('#profile-form').elements.experience.placeholder = 'Most recent role first.\n\
 $('#agent-form').onsubmit = async e => {
     e.preventDefault();
     const values = Object.fromEntries(new FormData(e.target));
-    const config = {sources: values.source === 'both' ? ['LinkedIn', 'SEEK'] : [values.source], submit: values.submit === 'true'};
+    const config = {sources: ['LinkedIn', 'SEEK'], submit: values.submit === 'true'};
     for (const key of ['max_jobs', 'max_applications', 'min_score', 'pages']) config[key] = Number(values[key]);
     try {
         await api('/api/automation/start', config);
@@ -70,3 +70,23 @@ detail = function(id) {
 };
 refreshAgent().catch(() => {});
 setInterval(() => refreshAgent().catch(() => {}), 4000);
+
+// One shared search screen for both job sites.
+automationNav.remove();
+const combinedSearchNav = document.querySelector('nav [data-view=search]');
+combinedSearchNav.querySelector('span').textContent = 'Job search';
+combinedSearchNav.dataset.view = 'automation';
+combinedSearchNav.onclick = () => { view('automation'); $('#breadcrumb').textContent = 'Combined job search'; };
+$('#agent-form input[name=max_applications]').closest('label').hidden = true;
+const combinedSearchNote = document.createElement('p');
+combinedSearchNote.className = 'muted';
+combinedSearchNote.textContent = 'One run searches LinkedIn and SEEK in Chrome, alternates results from both sites, and adds new jobs to one pipeline. Suitable jobs get a tailored resume and cover letter for your review.';
+$('#agent-form').before(combinedSearchNote);
+const dashboardSearch = document.createElement('button');
+dashboardSearch.className = 'primary';
+dashboardSearch.textContent = 'Search jobs';
+dashboardSearch.onclick = combinedSearchNav.onclick;
+const dashboardActions = document.createElement('div');
+dashboardActions.className = 'dashboard-actions';
+$('#add').before(dashboardActions);
+dashboardActions.append(dashboardSearch, $('#add'));

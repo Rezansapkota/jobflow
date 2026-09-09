@@ -102,6 +102,29 @@ def wait_for_access(agent, page, target=None):
 
 
 def discover(agent, profile, config, seen):
+    """Merge sites in turn so the first site cannot consume the entire limit."""
+    streams = [discover_site(agent, profile, {**config, 'sources': [source]}, seen)
+               for source in config['sources']]
+    active = list(streams)
+    count = 0
+    try:
+        while active and count < config['max_jobs'] and not agent.stopped():
+            for stream in list(active):
+                if count >= config['max_jobs'] or agent.stopped():
+                    return
+                try:
+                    job = next(stream)
+                except StopIteration:
+                    active.remove(stream)
+                    continue
+                count += 1
+                yield job
+    finally:
+        for stream in streams:
+            stream.close()
+
+
+def discover_site(agent, profile, config, seen):
     """Yield extracted jobs, at most max_jobs across up to 3 pages per source/role."""
     from app import validate_url
     count = 0

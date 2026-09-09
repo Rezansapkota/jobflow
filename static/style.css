@@ -3,6 +3,7 @@
 .profile-switch{display:flex;align-items:center;gap:14px;padding-top:20px}.profile-switch label{margin:0;min-width:200px;max-width:360px;flex:1}.profile-switch select{margin-top:6px}.profile-switch button{margin-top:20px}
 
 .certificate-card{border:1px solid #dde5df;border-radius:8px;padding:16px;margin:18px 0}.certificate-card p{overflow-wrap:anywhere}
+.dashboard-actions{display:flex;gap:12px;flex-wrap:wrap}.title-row{flex-wrap:wrap}
 
 /* Soft, tactile surfaces with readable text and explicit keyboard focus. */
 :root{--surface:#e8edef;--ink:#31464b;--soft:#60757b;--raised:9px 9px 22px #c9d1d5,-9px -9px 22px #ffffff;--inset:inset 4px 4px 9px #cbd4d8,inset -4px -4px 9px #ffffff;background:var(--surface);color:var(--ink);font-family:'Segoe UI',Arial,sans-serif}

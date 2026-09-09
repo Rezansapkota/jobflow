@@ -112,3 +112,7 @@ node --check static/ui.js
 Job agent searches and prepares documents, then leaves jobs in the pipeline for review. Open each job to preview and download its tailored resume and cover letter. Click **I reviewed both documents - approve**, then select the approved job and use **Run selected** with **Automatic submission**. The server blocks automatic runs without approval of the current documents and attachments. Regenerating documents or changing application facts requires a fresh review. Manual handoff remains under your control.
 
 Chrome keeps a separate session for each career profile. Sign in once in its new agent window. Older Edge/Chromium sessions are not copied. Run `python start.py --port 8775` to open the updated local dashboard in Chrome.
+
+## Combined job search
+
+Use **Search jobs** on the dashboard or **Job search** in the sidebar. One **Search LinkedIn + SEEK** action searches both sites with the active profile, alternates their results within the overall limit, and saves jobs in one pipeline. Each site still needs its own sign-in. Suitable jobs receive documents for approval before submission.
