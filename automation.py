@@ -51,6 +51,7 @@ def run(profile, config):
     from browser_agent import BrowserAgent
     from discovery import discover
     from local_ai import assess, rewrite, cover_letter
+    from certificates import select_for_job
     record = {'id': uuid.uuid4().hex, 'profile_id': profile.get('id', 'default'), 'profile_title': profile.get('title', 'Default profile'), 'status': 'running', 'config': config, 'found': 0, 'prepared': 0, 'attempted': 0, 'submitted': 0, 'events': []}
     def event(message):
         record['events'].append({'time': datetime.now(timezone.utc).isoformat(), 'message': message})
@@ -83,7 +84,7 @@ def run(profile, config):
                     if app.STOP.is_set():
                         break
                     letter = cover_letter(profile, job)
-                    job.update(resume=app.tailor(profile, job, draft), cover_letter=letter, profile_snapshot=profile, status='ready', note='Matched by Qwen; resume and cover letter prepared locally.')
+                    job.update(resume=app.tailor(profile, job, draft), cover_letter=letter, profile_snapshot=profile, certificate_ids=select_for_job(profile, job), status='ready', note='Matched by Qwen; resume and cover letter prepared locally.')
                     app.save_job(job)
                     record['prepared'] += 1
                     if app.STOP.is_set():

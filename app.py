@@ -42,6 +42,12 @@ def init():
     with connect() as c:
         c.executescript('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT); CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, url TEXT UNIQUE, payload TEXT NOT NULL);')
         c.execute('CREATE TABLE IF NOT EXISTS profiles (id TEXT PRIMARY KEY, payload TEXT NOT NULL)')
+        c.execute('CREATE TABLE IF NOT EXISTS certificates (id TEXT PRIMARY KEY, profile_id TEXT NOT NULL, payload TEXT NOT NULL)')
+        for row in c.execute('SELECT payload FROM certificates').fetchall():
+            certificate = json.loads(row[0])
+            if certificate['status'] == 'reading':
+                certificate.update(status='needs_review', note='Reading was interrupted. Retry extraction or enter details manually.')
+                c.execute('UPDATE certificates SET payload=? WHERE id=?', (json.dumps(certificate), certificate['id']))
         if not c.execute('SELECT 1 FROM profiles LIMIT 1').fetchone():
             legacy = c.execute("SELECT value FROM settings WHERE key='profile'").fetchone()
             initial = {**DEFAULT_PROFILE, **(json.loads(legacy[0]) if legacy else {}), 'id': 'default'}
@@ -81,6 +87,18 @@ def profiles():
 def require_profile(job, p):
     if job.get('profile_id', 'default') != p['id']:
         raise ValueError('This job belongs to a different profile. Switch profiles first.')
+
+
+def invalidate_profile(pid):
+    for job in jobs():
+        if job.get('profile_id', 'default') == pid and job['status'] in ('ready', 'needs_input', 'saved'):
+            job.update(status='saved', resume=None, cover_letter=None, assessment=None, profile_snapshot=None, certificate_ids=[], note='Profile or certificates updated. Prepare fresh documents.')
+            save_job(job)
+
+
+def application_profile():
+    from certificates import effective_profile
+    return effective_profile(profile())
 
 
 def jobs():
@@ -141,13 +159,14 @@ def tailor(p, job, ai_draft=None):
 
 def prepare_ai(ids, p):
     from local_ai import rewrite, cover_letter
+    from certificates import select_for_job
     try:
         for jid in ids:
             job = get_job(jid)
             try:
                 draft = rewrite(p, job)
                 letter = cover_letter(p, job)
-                job.update(resume=tailor(p, job, draft), cover_letter=letter, profile_snapshot=p, status='ready', note='Qwen resume and cover letter ready. Review before applying.')
+                job.update(resume=tailor(p, job, draft), cover_letter=letter, profile_snapshot=p, certificate_ids=select_for_job(p, job), status='ready', note='Qwen resume and cover letter ready. Review before applying.')
             except Exception as exc:
                 job['note'] = str(exc) if isinstance(exc, ValueError) else 'Local tailoring failed. Try again or choose Basic tailoring.'
             save_job(job)
@@ -224,7 +243,15 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == '/api/state':
             p = profile()
-            return self.send(200, {'profile': p, 'profiles': profiles(), 'jobs': [j for j in jobs() if j.get('profile_id', 'default') == p['id']], 'running': RUN_LOCK.locked(), 'preparing': AI_LOCK.locked(), 'token': TOKEN})
+            from certificates import rows, effective_profile
+            return self.send(200, {'profile': p, 'profiles': profiles(), 'certificates': rows(p['id']), 'combined_certifications': effective_profile(p)['certifications'], 'jobs': [j for j in jobs() if j.get('profile_id', 'default') == p['id']], 'running': RUN_LOCK.locked(), 'preparing': AI_LOCK.locked(), 'token': TOKEN})
+        if path.startswith('/api/certificates/file/'):
+            try:
+                from certificates import get, file_path, ALLOWED
+                record = get(path.rsplit('/', 1)[1], profile()['id'])
+                return self.send(200, file_path(record).read_bytes(), ALLOWED[record['extension']], 'certificate' + record['extension'])
+            except (ValueError, OSError) as exc:
+                return self.send(404, {'error': str(exc)})
         if path == '/api/ai':
             from local_ai import status
             return self.send(200, status())
@@ -249,7 +276,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, docx(job['resume']['text']), 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'resume.docx')
             except ValueError as exc:
                 return self.send(404, {'error': str(exc)})
-        files = {'/': ('index.html', 'text/html; charset=utf-8'), '/style.css': ('style.css', 'text/css'), '/ui.js': ('ui.js', 'text/javascript'), '/automation-ui.js': ('automation-ui.js', 'text/javascript'), '/profiles-ui.js': ('profiles-ui.js', 'text/javascript')}
+        files = {'/': ('index.html', 'text/html; charset=utf-8'), '/style.css': ('style.css', 'text/css'), '/ui.js': ('ui.js', 'text/javascript'), '/automation-ui.js': ('automation-ui.js', 'text/javascript'), '/profiles-ui.js': ('profiles-ui.js', 'text/javascript'), '/certificates-ui.js': ('certificates-ui.js', 'text/javascript')}
         if path in files:
             name, mime = files[path]
             return self.send(200, (ROOT / 'static' / name).read_bytes(), mime)
@@ -264,7 +291,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(403, {'error': 'Refresh the app and try again.'})
         try:
             length = int(self.headers.get('Content-Length', 0))
-            if not 0 < length <= 300_000:
+            limit = 14_100_000 if urlparse(self.path).path == '/api/certificates/upload' else 300_000
+            if not 0 < length <= limit:
                 raise ValueError('Request is empty or too large.')
             body = json.loads(self.rfile.read(length))
             if not isinstance(body, dict):
@@ -277,7 +305,35 @@ class Handler(BaseHTTPRequestHandler):
             if AI_LOCK.locked():
                 raise ValueError('Qwen is preparing resumes. Wait for it to finish before editing.')
             path = urlparse(self.path).path
-            if path == '/api/profiles/create':
+            if path.startswith('/api/certificates/'):
+                import certificates
+                p = profile()
+                if body.get('profile_id') != p['id']:
+                    raise ValueError('Active profile changed. Select the intended profile before uploading.')
+                if path in ('/api/certificates/upload', '/api/certificates/retry'):
+                    record = certificates.receive(p['id'], body.get('filename', ''), body.get('data', '')) if path.endswith('/upload') else certificates.get(body.get('id'), p['id'])
+                    if not AI_LOCK.acquire(blocking=False):
+                        raise ValueError('Another reading operation is active.')
+                    record.update(status='reading', note='Reading certificate locally…')
+                    certificates.store(record)
+                    threading.Thread(target=certificates.read_worker, args=(record,), daemon=True).start()
+                elif path == '/api/certificates/save':
+                    record = certificates.get(body.get('id'), p['id'])
+                    for key in ('name', 'issuer', 'holder', 'issued_on', 'expires_on', 'keywords'):
+                        record[key] = str(body.get(key, '')).strip()[:500]
+                    record['enabled'] = body.get('enabled') is True
+                    record['status'], record['note'] = certificates.validate_record(record, p, manual=True)
+                    certificates.store(record)
+                    invalidate_profile(p['id'])
+                elif path == '/api/certificates/remove':
+                    record = certificates.get(body.get('id'), p['id'])
+                    # Keep file evidence for old submitted applications; detach from active profile.
+                    record.update(enabled=False, status='removed', note='Removed from active certifications.')
+                    certificates.store(record)
+                    invalidate_profile(p['id'])
+                else:
+                    return self.send(404, {'error': 'Not found'})
+            elif path == '/api/profiles/create':
                 title = str(body.get('title', '')).strip()[:100]
                 if not title:
                     raise ValueError('Give the profile a title, such as Rejan IT.')
@@ -302,10 +358,7 @@ class Handler(BaseHTTPRequestHandler):
                 p['answers'] = answers
                 with connect() as c:
                     c.execute('UPDATE profiles SET payload=? WHERE id=?', (json.dumps(p), p['id']))
-                for job in jobs():
-                    if job.get('profile_id', 'default') == p['id'] and job['status'] in ('ready', 'needs_input', 'saved'):
-                        job.update(status='saved', resume=None, cover_letter=None, assessment=None, profile_snapshot=None, note='Profile updated. Prepare fresh documents.')
-                        save_job(job)
+                invalidate_profile(p['id'])
             elif path == '/api/jobs':
                 url, source = validate_url(str(body.get('url', '')))
                 title, company, description = [str(body.get(k, '')).strip() for k in ('title', 'company', 'description')]
@@ -315,7 +368,7 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError('This job is already in your workspace.')
                 save_job(dict(id=uuid.uuid4().hex, profile_id=profile()['id'], url=url, source=source, title=title, company=company, description=description, status='saved', note='', resume=None))
             elif path == '/api/prepare':
-                p = profile()
+                p = application_profile()
                 if not p['name'] or not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+', p['email']) or not p['experience']:
                     raise ValueError('Save your name, valid email and real experience in My profile first.')
                 selected = body.get('ids', [])
@@ -336,7 +389,8 @@ class Handler(BaseHTTPRequestHandler):
                     job = get_job(jid)
                     if job['status'] in ('submitted', 'uncertain', 'interview', 'rejected'):
                         continue
-                    job.update(resume=tailor(p, job), profile_snapshot=p, status='ready', note='Tailored resume ready.')
+                    from certificates import select_for_job
+                    job.update(resume=tailor(p, job), profile_snapshot=p, certificate_ids=select_for_job(p, job), status='ready', note='Tailored resume ready.')
                     save_job(job)
             elif path == '/api/status':
                 job = get_job(body['id'])
@@ -347,7 +401,7 @@ class Handler(BaseHTTPRequestHandler):
                 save_job(job)
             elif path == '/api/automation/start':
                 from automation import validate_config, run
-                p = profile()
+                p = application_profile()
                 config = validate_config(p, body)
                 if not RUN_LOCK.acquire(blocking=False):
                     raise ValueError('A browser run is already active.')

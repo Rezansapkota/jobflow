@@ -64,6 +64,8 @@ class BrowserAgent:
             return 'needs_input', 'Run stopped before opening the application.'
         page = self.context.new_page()
         self.application_page = page
+        from certificates import attachments
+        certificate_files = attachments(job, p) if job.get('certificate_ids') else []
         page.goto(job['url'], wait_until='domcontentloaded', timeout=45000)
         page.wait_for_timeout(1500)
         if not submit:
@@ -94,7 +96,7 @@ class BrowserAgent:
             scope = dialogs.last if dialogs.count() else page.locator('main')
             if not scope.count():
                 return self.handoff(page, 'Application form could not be identified.')
-            missing = self.fill(scope, p, resume, cover_letter, job.get('cover_letter', ''))
+            missing = self.fill(scope, p, resume, cover_letter, job.get('cover_letter', ''), certificate_files)
             if missing:
                 return self.handoff(page, 'Please answer: ' + ', '.join(missing[:4]) + '.')
             final = scope.get_by_role('button', name=re.compile(r'^(Submit application|Send application)$', re.I))
@@ -116,7 +118,7 @@ class BrowserAgent:
         return self.handoff(page, 'Application exceeded 10 steps. Complete it manually.')
 
     @staticmethod
-    def fill(scope, profile, resume, cover_letter=None, cover_text=''):
+    def fill(scope, profile, resume, cover_letter=None, cover_text='', certificate_files=None):
         known = {'full name': profile['name'], 'name': profile['name'], 'email': profile['email'],
                  'email address': profile['email'], 'phone': profile['phone'], 'phone number': profile['phone'],
                  'mobile phone number': profile['phone']}
@@ -139,6 +141,13 @@ class BrowserAgent:
                     field.set_input_files(str(cover_letter))
                 elif re.search(r'resume|résumé|cv\b', key, re.I) and not re.search(r'cover.?letter', key, re.I):
                     field.set_input_files(str(resume))
+                elif re.search(r'certificat|certificate|licen[cs]|qualification|training|supporting document|additional document', key, re.I):
+                    from certificates import field_files
+                    paths, error = field_files(certificate_files or [], key, field.get_attribute('accept') or '', field.get_attribute('multiple') is not None)
+                    if paths:
+                        field.set_input_files(paths)
+                    else:
+                        missing.append((label or 'Certificate upload') + ': ' + error)
                 else:
                     missing.append(label or 'document upload')
             elif kind in ('checkbox', 'radio'):
