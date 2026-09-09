@@ -214,11 +214,12 @@ def run_queue(ids, submit):
                     status, note = agent.apply(job, job.get('profile_snapshot') or p, resume, submit, letter)
                     set_status(jid, status, note)
                 except Exception as exc:
-                    set_status(jid, 'uncertain', f'Browser stopped: {type(exc).__name__}. Check the site before retrying.')
+                    uncertain = getattr(agent, 'submission_possible', False)
+                    set_status(jid, 'uncertain' if uncertain else 'needs_input', f'Browser stopped: {type(exc).__name__}. ' + ('Check the site before retrying.' if uncertain else 'No submission was attempted. Reopen the job to continue.'))
     except Exception as exc:
         for jid in ids:
             if get_job(jid)['status'] in ('ready', 'running'):
-                set_status(jid, 'needs_input', f'Browser could not start ({type(exc).__name__}). Run the browser install steps in README.md.')
+                set_status(jid, 'needs_input', f'Browser or account setup stopped: {str(exc)[:250]}')
     finally:
         RUN_LOCK.release()
 

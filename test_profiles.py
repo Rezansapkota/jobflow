@@ -86,6 +86,24 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(err.exception.code, 400)
         err.exception.close()
 
+    def test_browser_failure_only_uncertain_after_possible_submission(self):
+        from unittest.mock import MagicMock
+        from review import fingerprint
+        for possible, expected in [(False, 'needs_input'), (True, 'uncertain')]:
+            job = {'id': 'failure-test', 'url': 'https://www.seek.com.au/job/98765432', 'source': 'SEEK', 'profile_id': app.profile()['id'], 'status': 'ready', 'resume': {'text': 'Resume'}, 'cover_letter': 'Letter'}
+            job['approved_documents'] = fingerprint(job)
+            app.save_job(job)
+            browser = MagicMock()
+            browser.__enter__.return_value = browser
+            browser.submission_possible = possible
+            browser.apply.side_effect = RuntimeError('Browser closed')
+            app.STOP.clear()
+            app.RUN_LOCK.acquire()
+            with patch('browser_agent.BrowserAgent', return_value=browser), patch('accounts.prepare'), patch('accounts.browser_data', return_value=Path(self.temp.name)), patch('app.write_documents', return_value=(Path('resume.docx'), Path('letter.docx'))):
+                app.run_queue([job['id']], True)
+            self.assertFalse(app.RUN_LOCK.locked())
+            self.assertEqual(app.get_job(job['id'])['status'], expected)
+
     def test_legacy_profile_is_migrated_once(self):
         with app.connect() as c:
             c.execute('DELETE FROM profiles')

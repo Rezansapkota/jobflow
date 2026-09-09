@@ -36,6 +36,8 @@ class BrowserAgent:
         return page.get_by_role('heading', name=re.compile(r'^(application (sent|submitted)|your application (was|has been) (sent|submitted)|you successfully applied|application complete)[.!]?$', re.I)).count() > 0
 
     def handoff(self, page, reason):
+        # The user may submit while the agent is waiting in this visible window.
+        self.submission_possible = True
         self.progress(reason + ' The browser stays open for up to 5 minutes.')
         # Keep the visible browser available for the user to log in or finish.
         for _ in range(150):
@@ -49,6 +51,7 @@ class BrowserAgent:
         return 'needs_input', reason + ' Manual handoff timed out after 5 minutes. Check the site before retrying.'
 
     def apply(self, job, p, resume, submit, cover_letter=None):
+        self.submission_possible = False
         try:
             return self._apply(job, p, resume, submit, cover_letter)
         finally:
@@ -67,7 +70,7 @@ class BrowserAgent:
         if not submit:
             # Manual mode never clicks form controls or uploads files.
             return self.handoff(page, 'Manual mode: complete the application in the browser; your resume is in data/' + resume.name + '.')
-        if page.locator('input[type=password]').count() or re.search(r'/login|/checkpoint|/authwall', page.url):
+        if page.locator('input[type=password]:visible').count() or re.search(r'/login|/checkpoint|/authwall', page.url):
             from discovery import wait_for_access
             wait_for_access(self, page, job['url'])
         if job['source'] == 'LinkedIn':
@@ -87,20 +90,23 @@ class BrowserAgent:
             host = urlparse(page.url).hostname or ''
             if host not in ('www.linkedin.com', 'linkedin.com', 'www.seek.com.au', 'seek.com.au') and not re.fullmatch(r'[a-z]{2,3}\.linkedin\.com', host):
                 return self.handoff(page, 'Application moved to an external site. Complete it manually.')
-            if page.locator('iframe[src*="captcha"], iframe[title*="challenge" i], input[type=password]').count():
+            if page.locator('iframe[src*="captcha"]:visible, iframe[title*="challenge" i]:visible, input[type=password]:visible').count():
                 return self.handoff(page, 'Login or verification needs your input.')
-            dialogs = page.get_by_role('dialog')
-            scope = dialogs.last if dialogs.count() else page.locator('main')
+            dialogs = page.get_by_role('dialog').filter(visible=True)
+            scope = dialogs.last if dialogs.count() else page.locator('main:visible')
             if not scope.count():
                 return self.handoff(page, 'Application form could not be identified.')
             missing = self.fill(scope, p, resume, cover_letter, job.get('cover_letter', ''), certificate_files)
             if missing:
                 return self.handoff(page, 'Please answer: ' + ', '.join(missing[:4]) + '.')
+            if scope.locator('input:invalid:visible, textarea:invalid:visible, select:invalid:visible').count():
+                return self.handoff(page, 'A field failed the site validation. Correct it in the browser before submitting.')
             final = scope.get_by_role('button', name=re.compile(r'^(Submit application|Send application)$', re.I))
             if final.count() == 1 and final.is_visible():
                 if self.stopped():
                     return 'needs_input', 'Run stopped before submission.'
                 # Record ambiguity before any network submission; the caller never retries it.
+                self.submission_possible = True
                 final.click()
                 for _ in range(15):
                     if self.confirmed(page):
@@ -148,6 +154,8 @@ class BrowserAgent:
                 else:
                     missing.append(label or 'document upload')
             elif kind in ('checkbox', 'radio'):
+                if kind == 'radio' and field.evaluate("el => !!el.name && Array.from(document.getElementsByName(el.name)).some(other => other.type === 'radio' && other.form === el.form && other.checked)"):
+                    continue
                 # Consent and declarations must be answered explicitly on the form.
                 if not field.is_checked():
                     missing.append(label or 'selection / consent')

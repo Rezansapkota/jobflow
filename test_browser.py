@@ -165,6 +165,41 @@ class BrowserTests(unittest.TestCase):
         self.assertIn('Darwin', result['location'])
         page.close()
 
+    def test_linkedin_multistep_with_hidden_login_and_answered_radio(self):
+        context = self.browser.new_context()
+        fixture = '''<input type="password" hidden><main><button onclick="document.querySelector('[role=dialog]').hidden=false">Easy Apply</button></main>
+        <div role="dialog" hidden><section id="first"><label>Full name<input></label><label>Email<input type="email" required></label>
+        <label>Yes<input type="radio" name="answer" checked></label><label>No<input type="radio" name="answer"></label>
+        <button onclick="document.querySelector('#first').remove();document.querySelector('#second').hidden=false">Next</button></section>
+        <section id="second" hidden><label>Resume<input type="file" id="resume"></label><label>Cover letter<input type="file" id="letter"></label>
+        <button onclick="if(document.querySelector('#resume').files.length && document.querySelector('#letter').files.length)document.body.innerHTML='<h1>Application submitted</h1>'">Submit application</button></section></div>'''
+        context.route('**/*', lambda route: route.fulfill(status=200, content_type='text/html', body=fixture))
+        agent = BrowserAgent(app.DATA)
+        agent.context = context
+        with tempfile.TemporaryDirectory() as directory:
+            resume, letter = Path(directory) / 'resume.docx', Path(directory) / 'letter.docx'
+            resume.write_bytes(app.docx('Fictional resume'))
+            letter.write_bytes(app.docx('Fictional letter'))
+            with patch.object(agent, 'handoff', return_value=('needs_input', 'Unexpected handoff')) as handoff:
+                result = agent.apply({'url': 'https://www.linkedin.com/jobs/view/12345678/', 'source': 'LinkedIn'}, {**app.DEFAULT_PROFILE, 'name': 'Alex Example', 'email': 'alex@example.invalid'}, resume, True, letter)
+            self.assertEqual(result[0], 'submitted')
+            handoff.assert_not_called()
+            self.assertTrue(agent.submission_possible)
+        context.close()
+
+    def test_invalid_email_blocks_submit(self):
+        context = self.browser.new_context()
+        fixture = '''<main><button onclick="document.querySelector('form').hidden=false">Apply now</button><form hidden><label>Email<input type="email" required></label><button type="button" onclick="window.clicked=true">Submit application</button></form></main>'''
+        context.route('**/*', lambda route: route.fulfill(status=200, content_type='text/html', body=fixture))
+        agent = BrowserAgent(app.DATA)
+        agent.context = context
+        with patch.object(agent, 'handoff', return_value=('needs_input', 'Validation failed')) as handoff:
+            result = agent.apply({'url': 'https://www.seek.com.au/job/12345678', 'source': 'SEEK'}, {**app.DEFAULT_PROFILE, 'email': 'invalid-email'}, Path('unused.docx'), True)
+        self.assertEqual(result[0], 'needs_input')
+        self.assertIn('validation', handoff.call_args.args[1])
+        self.assertFalse(agent.submission_possible)
+        context.close()
+
     def test_browser_submits_resume_and_cover_letter_to_intercepted_fixture(self):
         # Every request is intercepted locally: the fictional application never reaches SEEK.
         context = self.browser.new_context()
