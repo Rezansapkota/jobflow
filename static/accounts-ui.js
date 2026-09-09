@@ -1,10 +1,10 @@
 const accountFields = document.createElement('div');
-accountFields.innerHTML = `<h2>Job site accounts</h2><p class="muted">Add your profile links, or leave them blank to open each site's account page. Enter your ID and password directly in the agent browser when it opens. Each career profile keeps its own local browser session.</p><div class="grid"><label>LinkedIn profile link<input name="linkedin_url" type="url" placeholder="https://www.linkedin.com/in/your-name/"></label><label>SEEK profile link<input name="seek_url" type="url" placeholder="https://www.seek.com.au/profile/me"></label></div>`;
+accountFields.innerHTML = `<h2>Job site accounts</h2><p class="muted">Add your profile links, or leave them blank to open each site's account page. Sign in directly to LinkedIn or SEEK using the email sign-in option offered by that site. Google sign-in may be blocked in the automated browser; signing into Chrome itself is not required. Each career profile keeps its own local browser session.</p><div class="grid"><label>LinkedIn profile link<input name="linkedin_url" type="url" placeholder="https://www.linkedin.com/in/your-name/"></label><label>SEEK profile link<input name="seek_url" type="url" placeholder="https://www.seek.com.au/profile/me"></label></div>`;
 $('#profile-form details').before(accountFields);
 for (const key of ['linkedin_url', 'seek_url']) $('#profile-form').elements[key].value = state.profile[key] || '';
 const accountBanner = document.createElement('div');
 accountBanner.className = 'panel'; accountBanner.hidden = true;
-accountBanner.innerHTML = '<h2>Confirm your job site account</h2><p id="account-instructions"></p><button type="button" id="account-continue" class="primary">Account ready — continue</button><button type="button" id="account-stop">Cancel run</button>';
+accountBanner.innerHTML = '<h2>Confirm your job site account</h2><p id="account-instructions"></p><p class="muted">If Google says this browser may not be secure, go back to the job site and use its own email sign-in option if available. Use your job-site password, not your Google password. Google-only accounts may need an alternative sign-in method set up through the job site in ordinary Chrome.</p><button type="button" id="account-continue" class="primary">Account ready — continue</button><button type="button" id="account-stop">Cancel run</button>';
 document.querySelector('header').after(accountBanner);
 $('#account-continue').onclick = async () => {
     try {

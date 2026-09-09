@@ -116,3 +116,7 @@ Chrome keeps a separate session for each career profile. Sign in once in its new
 ## Combined job search
 
 Use **Search jobs** on the dashboard or **Job search** in the sidebar. One **Search LinkedIn + SEEK** action searches both sites with the active profile, alternates their results within the overall limit, and saves jobs in one pipeline. Each site still needs its own sign-in. Suitable jobs receive documents for approval before submission.
+
+## Google sign-in rejected
+
+Google may reject sign-in from an automation-controlled browser, including Chrome. Signing into Chrome is not required to use Jobflow. In the agent window, return to LinkedIn or SEEK and use the site's own email sign-in option where offered. Enter the job-site password, not your Google password. For a Google-only account, use ordinary Chrome and the job site's account settings/help to establish an alternative sign-in method if supported. Signing into ordinary Chrome does not automatically sign in the separate agent session. Jobflow does not bypass this restriction. See https://support.google.com/accounts/answer/7675428 .
