@@ -95,15 +95,16 @@ def run(profile, config):
         finally:
             write(record)
     try:
-        event('Starting combined search. No applications will be submitted during discovery.')
+        event('Starting background search: ' + ', '.join(config['sources']) + '. You can keep using the dashboard.', 'searching')
         existing = [j for j in app.jobs() if j.get('profile_id', 'default') == profile.get('id', 'default') and j['status'] in ('saved', 'needs_input', 'ready') and not (j.get('resume') and j.get('cover_letter'))]
+        existing = [job for job in existing if job.get('source') in config['sources']]
         for job in existing[:config['max_jobs']]:
             if app.STOP.is_set():
                 break
             record['revisited'] += 1
             process(job)
         if not app.STOP.is_set():
-            with BrowserAgent(browser_data(profile), app.STOP) as agent:
+            with BrowserAgent(browser_data(profile), app.STOP, headless=True) as agent:
                 agent.progress = event
                 agent.source_issues = []
                 seen = {job['url'] for job in app.jobs()}
@@ -133,7 +134,7 @@ def run(profile, config):
         record['status'] = 'stopped' if app.STOP.is_set() else 'needs_input'
         message = str(exc)[:350]
         if 'closed' in message.lower():
-            message = 'Chrome was closed. Keep the agent window open while searching, then start again. Saved jobs and documents are preserved.'
+            message = 'The background browser closed unexpectedly. Start search again. Saved jobs and documents are preserved.'
         event(message, record['status'])
     finally:
         app.RUN_LOCK.release()

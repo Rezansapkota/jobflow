@@ -6,8 +6,9 @@ from pathlib import Path
 
 
 class BrowserAgent:
-    def __init__(self, data, stop=None):
+    def __init__(self, data, stop=None, *, headless=False):
         self.data = data
+        self.headless = headless
         self.progress = lambda note: None
         self.stop = stop
 
@@ -19,7 +20,7 @@ class BrowserAgent:
         self.playwright = sync_playwright().start()
         try:
             self.context = self.playwright.chromium.launch_persistent_context(
-                str(self.data / 'chrome-browser'), channel='chrome', headless=False, viewport={'width': 1280, 'height': 900})
+                str(self.data / 'chrome-browser'), channel='chrome', headless=self.headless, viewport={'width': 1280, 'height': 900})
             self.context.set_default_timeout(6000)
         except Exception:
             self.playwright.stop()

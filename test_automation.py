@@ -17,8 +17,8 @@ MATCH = {'score': 90, 'reason': 'Relevant customer service experience.', 'missin
 class FakeBrowser:
     attempts = []
 
-    def __init__(self, *args):
-        pass
+    def __init__(self, *args, **kwargs):
+        self.headless = kwargs.get('headless', False)
 
     def __enter__(self):
         return self
@@ -70,6 +70,21 @@ class AutomationTests(unittest.TestCase):
             self.run_pipeline(False)
         prepare.assert_not_called()
         self.assertEqual(app.jobs()[0]['status'], 'ready')
+
+    def test_search_uses_background_browser(self):
+        with patch('browser_agent.BrowserAgent', wraps=FakeBrowser) as browser:
+            self.run_pipeline(False)
+        self.assertTrue(browser.call_args.kwargs['headless'])
+
+    def test_single_site_excludes_saved_jobs_from_other_site(self):
+        app.save_job({**JOB, 'id': 'seek-saved', 'profile_id': 'default', 'status': 'saved', 'resume': None})
+        config = automation.validate_config(PROFILE, {'sources': ['LinkedIn']})
+        with patch('discovery.discover', return_value=iter([])) as discover:
+            app.RUN_LOCK.acquire()
+            automation.run(PROFILE, config)
+        self.assertEqual(discover.call_args.args[2]['sources'], ['LinkedIn'])
+        self.assertEqual(automation.current()['revisited'], 0)
+        self.assertIsNone(app.get_job('seek-saved')['resume'])
 
     def test_saved_unfinished_job_is_retried_without_new_results(self):
         app.save_job({**JOB, 'id': 'saved-job', 'profile_id': 'default', 'status': 'saved', 'resume': None})

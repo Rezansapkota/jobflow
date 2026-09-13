@@ -8,21 +8,27 @@ const agentSection = document.createElement('section');
 agentSection.id = 'automation'; agentSection.className = 'view'; agentSection.hidden = true;
 agentSection.innerHTML = `<div class="eyebrow">FROM SEARCH TO APPLICATION</div>
 <h1>One search. More possibilities.</h1>
-<p class="muted">Search in your browser, match against your profile, and prepare a resume and cover letter with local Qwen.</p>
+<p class="muted">Search in the background, match against your profile, and prepare a resume and cover letter with local Qwen. You can keep using the dashboard while it runs.</p>
 <form id="agent-form" class="panel">
 <p>Target roles and location come from <button id="agent-profile" type="button" class="text-button">My profile ↗</button>. Separate multiple roles with commas.</p>
-<div class="grid"><label>Job sites<select name="source"><option value="both">LinkedIn + SEEK</option></select></label>
-<label>Run mode<select name="submit"><option value="true">Search, prepare and apply</option><option value="false">Search and prepare only</option></select></label></div>
+<div class="grid"><label>Job sites<select name="source"><option value="both">LinkedIn + SEEK</option><option value="LinkedIn">LinkedIn only</option><option value="SEEK">SEEK only</option></select></label>
+<label>Run mode<select name="submit"><option value="false">Search and prepare for review</option></select></label></div>
 <div class="grid"><label>Maximum jobs to inspect<input name="max_jobs" type="number" min="1" max="30" value="10" required></label>
 <label>Maximum application attempts<input name="max_applications" type="number" min="1" max="10" value="3" required></label>
 <label>Minimum Qwen match score<input name="min_score" type="number" min="1" max="100" value="80" required></label>
 <label>Search pages per site and role<input name="pages" type="number" min="1" max="3" value="1" required></label></div>
-<p class="muted">A score is an AI estimate. Mandatory requirements, target role and location must also match. Unknown eligibility needs your input. Sign-in, verification and unsupported forms pause in the browser.</p>
+<p class="muted">A score is an AI estimate. Mandatory requirements, target role and location must also match. Unknown eligibility needs your input. If a site needs sign-in or verification, connect it in My profile and retry. Other selected sites continue searching.</p>
 <button type="submit" class="primary" id="agent-start">Search LinkedIn + SEEK ↗</button>
 <button type="button" id="agent-stop">Stop run</button>
 </form><div class="panel"><h2>Run activity</h2><p id="agent-summary">No run started.</p><ol id="agent-events" class="agent-events"></ol></div>`;
 $('footer').before(agentSection);
 $('#agent-profile').onclick = () => view('profile');
+const sourceSelect = $('#agent-form select[name=source]');
+function updateSearchLabel() {
+    $('#agent-start').textContent = 'Search ' + (sourceSelect.value === 'both' ? 'LinkedIn + SEEK' : sourceSelect.value) + ' in background';
+}
+sourceSelect.onchange = updateSearchLabel;
+updateSearchLabel();
 const eligibility = document.createElement('div');
 eligibility.innerHTML = '<label>Work rights<textarea name="work_rights" rows="2" placeholder="Countries you may work in, visa conditions, or sponsorship needs"></textarea></label><label>Other job requirements and preferences<textarea name="constraints" rows="3" placeholder="Availability, work arrangements, salary preferences, excluded roles or employers, travel limits"></textarea></label>';
 $('#profile-form details').before(eligibility);
@@ -31,13 +37,15 @@ $('#profile-form').elements.experience.placeholder = 'Most recent role first.\n\
 $('#agent-form').onsubmit = async e => {
     e.preventDefault();
     const values = Object.fromEntries(new FormData(e.target));
-    const config = {sources: ['LinkedIn', 'SEEK'], submit: values.submit === 'true'};
+    const config = {sources: values.source === 'both' ? ['LinkedIn', 'SEEK'] : [values.source], submit: false};
     for (const key of ['max_jobs', 'max_applications', 'min_score', 'pages']) config[key] = Number(values[key]);
+    $('#agent-start').disabled = true;
     try {
         await api('/api/automation/start', config);
-        toast('Job agent started. Use the browser if sign-in is required.');
+        toast('Background search started. You can keep using the dashboard.');
         await refresh(); await refreshAgent();
     } catch (err) { toast(err.message); }
+    finally { await refreshAgent().catch(() => {}); }
 };
 $('#agent-stop').onclick = async () => {
     try { await api('/api/stop', {}); toast('Stopping after the current browser or Qwen operation.'); }
@@ -80,7 +88,7 @@ combinedSearchNav.onclick = () => { view('automation'); $('#breadcrumb').textCon
 $('#agent-form input[name=max_applications]').closest('label').hidden = true;
 const combinedSearchNote = document.createElement('p');
 combinedSearchNote.className = 'muted';
-combinedSearchNote.textContent = 'One run checks unfinished saved jobs, searches LinkedIn and SEEK in Chrome, and adds new results to one pipeline. Public listings are searched first; sign in only if a site requests it. Suitable jobs get a tailored resume and cover letter for your review.';
+combinedSearchNote.textContent = 'One run checks unfinished saved jobs from your selected sites and searches for new listings in the background. Connect accounts in My profile if a site requests sign-in. Suitable jobs get a tailored resume and cover letter for your review.';
 $('#agent-form').before(combinedSearchNote);
 const dashboardSearch = document.createElement('button');
 dashboardSearch.className = 'primary';
