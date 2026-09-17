@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Resume Builder — Jobflow</title><link rel="stylesheet" href="/style.css"></head>
+<body>
+<aside><a class="brand" href="/">j<span>↗</span> <b>jobflow</b></a><div class="workspace">PERSONAL WORKSPACE</div><nav><a class="nav-link" href="/">Applications</a><a class="nav-link" href="/#profile">My profile</a><a class="nav-link active" href="/resume-builder" aria-current="page">Resume Builder</a></nav><div class="aside-bottom"><span class="dot"></span> Local workspace</div></aside>
+<main><header><span>Workspace / Resume Builder</span><span class="private">Saved on this computer</span></header>
+<section class="view"><div class="eyebrow">YOUR EXPERIENCE, READY TO SHARE</div><h1>Build your resume.</h1><p class="muted">Start with your saved career profile. Edit your resume and download it when you’re ready.</p>
+<p id="builder-status" role="status">Loading your profile…</p>
+<div class="banner"><div><b>Local LLM resume assistant</b><p id="local-model-status" role="status">Checking Qwen on this computer...</p></div><button id="refresh-model" type="button">Check connection</button></div>
+<section class="panel resume-target" aria-labelledby="tailor-heading">
+<h2 id="tailor-heading">Tailor your resume to a job</h2>
+<p class="muted">Paste the full job description. We'll compare its requirements with your source information below, focus your resume on relevant facts, and show what needs your review.</p>
+<form id="tailor-form"><fieldset id="tailor-fields" disabled>
+<div class="grid"><label>Target job title<input id="target-title" maxlength="200" placeholder="e.g. Customer Service Officer"></label><label>Tailoring method<select id="tailor-engine"><option value="ollama">Local AI - analyze and tailor</option><option value="basic">Basic matching - wording overlap only</option></select></label></div>
+<label>Job description<textarea id="target-description" rows="7" required minlength="40" maxlength="16000" placeholder="Paste responsibilities, essential and preferred criteria, skills and qualifications..."></textarea></label>
+<h3>Resume preferences</h3>
+<div class="grid"><label>Detail level<select id="resume-length"><option value="concise">Concise - strongest examples</option><option value="balanced" selected>Balanced</option><option value="detailed">Detailed - broader relevant evidence</option></select></label><label>Writing style<select id="resume-tone"><option value="direct">Clear and direct</option><option value="formal">Formal and professional</option></select></label><label>Emphasis<select id="resume-emphasis"><option value="role_fit">Essential job requirements</option><option value="transferable">Transferable experience</option><option value="achievements">Verified achievements</option></select></label><label>Maximum skills<select id="resume-max-skills"><option value="6">6</option><option value="10">10</option><option value="12" selected>12</option></select></label></div>
+<p class="muted">Detail level guides content length, not an exact page count. The model uses only supported facts.</p>
+<details><summary>Saved information included in the analysis</summary><p class="muted">Your source facts below and these saved application preferences inform the review. Edit application preferences in <a href="/#profile">My profile</a>. Screening answers and personal constraints stay out of the resume text.</p><pre id="analysis-context"></pre></details>
+<p id="tailor-engine-note" class="muted">Local AI uses Qwen on this computer. Basic matching works without AI.</p>
+<button type="submit" class="primary" id="tailor-submit">Analyze job &amp; tailor resume</button>
+</fieldset></form><p id="tailor-status" role="status" aria-live="polite"></p>
+</section>
+<section id="tailor-results" class="panel resume-analysis" hidden aria-labelledby="analysis-heading">
+<h2 id="analysis-heading">Job match review</h2><p id="analysis-note" class="muted"></p>
+<p id="analysis-settings" class="muted"></p>
+<h3>Skills emphasized</h3><p id="analysis-skills"></p>
+<div class="requirement-scroll"><table class="requirement-table"><thead><tr><th scope="col">Job requirement</th><th scope="col">Profile evidence</th><th scope="col">Review</th></tr></thead><tbody id="analysis-requirements"></tbody></table></div>
+<h3>Before you apply</h3><ul id="analysis-warnings"></ul>
+<h3>ATS-friendly format</h3><ul id="analysis-ats"></ul><p class="muted">These formatting choices help readability and parsing. Match analysis is a review aid, not an ATS score or a guarantee of selection.</p>
+<button type="button" id="resume-use-source">Use untailored resume</button>
+</section>
+<div class="resume-layout">
+<form id="resume-form" class="panel"><fieldset id="resume-fields" disabled><h2>Source information</h2><p class="muted">Keep your real experience here. Tailoring creates a separate final resume without replacing these source facts.</p><label>Career profile<select id="resume-profile"></select></label><p class="muted">Edits are saved as a separate draft in this browser. Your career profile stays unchanged.</p><button type="button" id="resume-reset">Refill from saved profile</button>
+<div class="grid"><label>Full name<input name="name" required autocomplete="name"></label><label>Email<input name="email" type="email" autocomplete="email"></label><label>Phone<input name="phone" autocomplete="tel"></label><label>Location<input name="location"></label></div>
+<label>Professional headline<input name="headline"></label><label>Professional summary<textarea name="summary" rows="4"></textarea></label><label>Skills<textarea name="skills" rows="3"></textarea></label><label>Work experience<textarea name="experience" rows="9"></textarea></label><label>Education<textarea name="education" rows="4"></textarea></label><label>Certifications and licences<textarea name="certifications" rows="4"></textarea></label>
+</fieldset></form>
+<section class="resume-preview panel" aria-label="Resume preview"><div class="resume-download"><h2>Download resume</h2><p class="muted"><span id="download-description">Download your current edits as a PDF, Word document or plain text.</span></p><div class="detail-actions"><button type="submit" form="resume-form" data-download="pdf" disabled>Download PDF (.pdf)</button><button type="submit" form="resume-form" class="primary" data-download="docx" disabled>Download Word (.docx)</button><button type="submit" form="resume-form" data-download="txt" disabled>Download text (.txt)</button></div><p id="download-status" role="status"></p></div><h2 id="preview-heading">Live preview</h2><details id="final-edit" hidden><summary>Edit final resume text</summary><label>Final resume<textarea id="final-resume-text" rows="18" aria-describedby="final-edit-note"></textarea></label><p id="final-edit-note" class="muted">Keep headings on their own lines. Review any manual edits for accuracy before downloading.</p></details><pre id="resume-preview">Your profile information will appear here.</pre></section>
+</div></section><footer>Built for your next move.</footer></main><script src="/resume-builder.js"></script></body></html>

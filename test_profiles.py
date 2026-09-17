@@ -117,10 +117,10 @@ class ProfileTests(unittest.TestCase):
 
     def test_certifications_reach_model_and_resume(self):
         p = {**app.profile(), 'certifications': 'First Aid | Expires 2027-06-01'}
-        response = {'message': {'content': json.dumps({'summary': 'Profile summary.', 'skills': []})}}
+        response = {'message': {'content': json.dumps({'priorities': ['First Aid required.'], 'summary': 'Profile summary.', 'skills': [], 'selection': {'headline': False, 'education': [], 'experience': [], 'certifications': [0]}})}}
         with patch.object(local_ai, 'request', return_value=response) as request:
             draft = local_ai.rewrite(p, {'title': 'Care assistant', 'description': 'First Aid required.'})
-        data = json.loads(request.call_args.args[1]['messages'][1]['content'])
+        data = json.loads(request.call_args_list[1].args[1]['messages'][1]['content'])
         self.assertEqual(data['candidate_facts']['certifications'], p['certifications'])
         self.assertIn('CERTIFICATIONS\nFirst Aid', app.tailor(p, {'description': 'First Aid required'}, draft)['text'])
 

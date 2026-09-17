@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs, urlencode
-from documents import docx, plain_text
+from documents import docx, plain_text, pdf
 import runtime
 BUILD_ID = runtime.build_id()
 
@@ -58,8 +58,10 @@ def init():
         # A crash after clicking Submit must never cause an automatic retry.
         for row in c.execute('SELECT * FROM jobs').fetchall():
             job = json.loads(row['payload'])
-            if job.get('status') == 'running':
-                job.update(status='uncertain', note='Previous run was interrupted. Check the site before retrying.')
+            if job.get('status') == 'running' or job.get('submission_in_progress') or job.get('submission_requested'):
+                active = job.get('status') == 'running' or job.get('submission_in_progress')
+                job.update(status='uncertain' if active else job['status'], submission_in_progress=False, submission_requested=None,
+                           note='Previous run was interrupted. Check the site before retrying.' if active else 'Queued submission cancelled on restart. Approve again to submit.')
                 c.execute('UPDATE jobs SET payload=? WHERE id=?', (json.dumps(job), job['id']))
         row = c.execute("SELECT value FROM settings WHERE key='automation'").fetchone()
         if row:
@@ -140,6 +142,9 @@ def words(text):
 
 def tailor(p, job, ai_draft=None):
     """Extractive tailoring: keep facts verbatim; reorder skills, never invent claims."""
+    if ai_draft:
+        from tailoring import focused_profile
+        p = focused_profile(p, ai_draft)
     description = job['description'].lower()
     skills = [s.strip() for s in re.split(r'[,\n]', p['skills']) if s.strip()]
     matched = [s for s in skills if re.search(r'(?<!\w)' + re.escape(s.lower()) + r'(?!\w)', description)]
@@ -154,20 +159,23 @@ def tailor(p, job, ai_draft=None):
             lines += ['', heading, value.strip()]
     # Chronology and attribution in the source experience remain intact.
     return {'text': '\n'.join(lines), 'matched': matched, 'score': round(100 * len(matched) / len(skills)) if skills else 0,
+            'tailoring_version': __import__('tailoring').VERSION if ai_draft else 0,
+            'job_priorities': ai_draft.get('job_priorities', []) if ai_draft else [],
             'engine': 'qwen3:8b' if ai_draft else 'basic',
             'format': 'ats-docx-v1',
-            'note': ('Written locally with Qwen. Review the generated summary for accuracy. ' if ai_draft else 'Skill overlap, not a qualification score. ') + 'Single-column DOCX with standard headings and selectable text. Experience and education are preserved verbatim.'}
+            'note': ('Written locally with Qwen. Review the generated summary for accuracy. ' if ai_draft else 'Skill overlap, not a qualification score. ') + 'Single-column DOCX with standard headings and selectable text. Selected facts retain their original wording; employment headings and dates stay in source order.'}
 
 
 def prepare_ai(ids, p):
     from local_ai import rewrite, cover_letter
+    from tailoring import focused_profile
     from certificates import select_for_job
     try:
         for jid in ids:
             job = get_job(jid)
             try:
                 draft = rewrite(p, job)
-                letter = cover_letter(p, job)
+                letter = cover_letter(focused_profile(p, draft), job)
                 job.update(approved_documents=None, resume=tailor(p, job, draft), cover_letter=letter, profile_snapshot=p, certificate_ids=select_for_job(p, job), status='ready', note='Qwen resume and cover letter ready. Review before applying.')
             except Exception as exc:
                 job['note'] = str(exc) if isinstance(exc, ValueError) else 'Local tailoring failed. Try again or choose Basic tailoring.'
@@ -192,18 +200,17 @@ def write_documents(job):
     return resume, letter
 
 
-def run_queue(ids, submit):
+def run_queue(ids, submit, profile_id=None):
     try:
         from browser_agent import BrowserAgent
-        p = profile()
-        from accounts import browser_data, prepare
+        p = profile(profile_id)
+        from accounts import browser_data
         with BrowserAgent(browser_data(p), STOP) as agent:
-            if submit:
-                prepare(agent, p, list(dict.fromkeys(get_job(jid)['source'] for jid in ids)))
             for jid in ids:
                 if STOP.is_set():
                     break
                 job = get_job(jid)
+                require_profile(job, p)
                 if job['status'] != 'ready':
                     continue
                 if submit:
@@ -223,6 +230,16 @@ def run_queue(ids, submit):
             if get_job(jid)['status'] in ('ready', 'running'):
                 set_status(jid, 'needs_input', f'Browser or account setup stopped: {str(exc)[:250]}')
     finally:
+        from submission_verification import recheck
+        try:
+            recheck(ids, profile(profile_id))
+        except Exception:
+            pass
+        for jid in ids:
+            job = get_job(jid)
+            if job.get('submission_in_progress'):
+                job['submission_in_progress'] = False
+                save_job(job)
         RUN_LOCK.release()
 
 
@@ -252,10 +269,18 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == '/api/health':
             return self.send(200, {'app': 'jobflow', 'build': BUILD_ID})
+        if path.startswith('/api/resume-builder/tasks/'):
+            from resume_builder import get as get_resume_task
+            try:
+                return self.send(200, get_resume_task(path.rsplit('/', 1)[1], profile()['id']))
+            except ValueError as exc:
+                return self.send(404, {'error': str(exc)})
         if path == '/api/state':
             p = profile()
+            from job_location import matches as location_matches, profile_location
+            from tailoring import VERSION
             from certificates import rows, effective_profile
-            return self.send(200, {'profile': p, 'profiles': profiles(), 'certificates': rows(p['id']), 'combined_certifications': effective_profile(p)['certifications'], 'jobs': [{**j, 'review_token': __import__('review').fingerprint(j), 'documents_approved': __import__('review').approved(j)} for j in jobs() if j.get('profile_id', 'default') == p['id']], 'running': RUN_LOCK.locked(), 'preparing': AI_LOCK.locked(), 'token': TOKEN, 'account_pending': __import__('accounts').pending(), 'connection_note': __import__('accounts').connection_note(p['id'])})
+            return self.send(200, {'profile': p, 'job_search_location': profile_location(p), 'profiles': profiles(), 'certificates': rows(p['id']), 'combined_certifications': effective_profile(p)['certifications'], 'jobs': [{**j, 'documents_outdated': bool(j.get('resume')) and j['resume'].get('tailoring_version', 0) < VERSION, 'location_matches_profile': location_matches(p, j) if profile_location(p) else None, 'review_token': __import__('review').fingerprint(j), 'documents_approved': __import__('review').approved(j)} for j in jobs() if j.get('profile_id', 'default') == p['id']], 'running': RUN_LOCK.locked(), 'preparing': AI_LOCK.locked(), 'token': TOKEN, 'account_pending': __import__('accounts').pending(), 'connection_note': __import__('accounts').connection_note(p['id'])})
         if path.startswith('/api/certificates/file/'):
             try:
                 from certificates import get, file_path, ALLOWED
@@ -288,6 +313,7 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as exc:
                 return self.send(404, {'error': str(exc)})
         files = {'/accounts-ui.js': ('accounts-ui.js', 'text/javascript'), '/': ('index.html', 'text/html; charset=utf-8'), '/style.css': ('style.css', 'text/css'), '/ui.js': ('ui.js', 'text/javascript'), '/automation-ui.js': ('automation-ui.js', 'text/javascript'), '/profiles-ui.js': ('profiles-ui.js', 'text/javascript'), '/certificates-ui.js': ('certificates-ui.js', 'text/javascript')}
+        files.update({'/resume-builder': ('resume-builder.html', 'text/html; charset=utf-8'), '/resume-builder.js': ('resume-builder.js', 'text/javascript')})
         if path in files:
             name, mime = files[path]
             return self.send(200, (ROOT / 'static' / name).read_bytes(), mime)
@@ -308,8 +334,29 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(length))
             if not isinstance(body, dict):
                 raise ValueError('Expected an object.')
+            if urlparse(self.path).path == '/api/resume-builder/tailor':
+                from resume_builder import start as start_resume_task
+                return self.send(202, start_resume_task(body, profile()))
+            if urlparse(self.path).path == '/api/resume-builder/download':
+                text = body.get('text')
+                if not isinstance(text, str) or not text.strip():
+                    raise ValueError('Add resume information before downloading.')
+                output_format = body.get('format', 'docx')
+                if output_format == 'pdf':
+                    return self.send(200, pdf(text), 'application/pdf', 'resume.pdf')
+                if output_format == 'txt':
+                    return self.send(200, plain_text(text).encode('utf-8'), 'text/plain; charset=utf-8', 'resume.txt')
+                if output_format != 'docx':
+                    raise ValueError('Choose PDF, Word or plain text for your resume download.')
+                return self.send(200, docx(text), 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'resume.docx')
             if urlparse(self.path).path == '/api/stop':
                 STOP.set()
+                from submission_queue import cancel_pending
+                cancel_pending()
+                return self.send(200, {'ok': True})
+            if urlparse(self.path).path in ('/api/review/approve', '/api/review/reject'):
+                from submission_queue import decide
+                decide(body['id'], 'approve' if urlparse(self.path).path == '/api/review/approve' else 'reject', body.get('review_token'), body.get('submit') is True)
                 return self.send(200, {'ok': True})
             if urlparse(self.path).path == '/api/accounts/confirm':
                 from accounts import confirm
@@ -412,15 +459,6 @@ class Handler(BaseHTTPRequestHandler):
                     from certificates import select_for_job
                     job.update(approved_documents=None, resume=tailor(p, job), profile_snapshot=p, certificate_ids=select_for_job(p, job), status='ready', note='Tailored resume ready.')
                     save_job(job)
-            elif path == '/api/review/approve':
-                from review import fingerprint
-                job = get_job(body['id'])
-                require_profile(job, profile())
-                token = fingerprint(job)
-                if job['status'] != 'ready' or not token or token != body.get('review_token'):
-                    raise ValueError('Documents changed or are incomplete. Reopen the job and review both documents.')
-                job.update(approved_documents=token, note='Documents approved. Select this job and run automatic submission when ready.')
-                save_job(job)
             elif path == '/api/status':
                 job = get_job(body['id'])
                 require_profile(job, profile())
@@ -448,6 +486,21 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError('A browser run is already active.')
                 STOP.clear()
                 threading.Thread(target=run, args=(p, config), daemon=True).start()
+            elif path == '/api/submission/verify':
+                p = profile()
+                ids = list(dict.fromkeys(body.get('ids', [])))
+                if not ids or len(ids) > 10:
+                    raise ValueError('Choose between 1 and 10 uncertain applications.')
+                for jid in ids:
+                    job = get_job(jid)
+                    require_profile(job, p)
+                    if job['status'] != 'uncertain':
+                        raise ValueError('This job does not need a submission check.')
+                if not RUN_LOCK.acquire(blocking=False):
+                    raise ValueError('Wait for the current browser operation.')
+                STOP.clear()
+                from submission_verification import worker
+                threading.Thread(target=worker, args=(ids, p), daemon=True).start()
             elif path == '/api/run':
                 ids = list(dict.fromkeys(body.get('ids', [])))
                 for jid in ids:
@@ -461,6 +514,10 @@ class Handler(BaseHTTPRequestHandler):
                 if not RUN_LOCK.acquire(blocking=False):
                     raise ValueError('A browser run is already active.')
                 STOP.clear()
+                for jid in ids:
+                    job = get_job(jid)
+                    job.update(submission_in_progress=True, submission_requested=None)
+                    save_job(job)
                 threading.Thread(target=run_queue, args=(ids, body.get('submit') is True), daemon=True).start()
             else:
                 return self.send(404, {'error': 'Not found'})

@@ -76,6 +76,35 @@ class AutomationTests(unittest.TestCase):
             self.run_pipeline(False)
         self.assertTrue(browser.call_args.kwargs['headless'])
 
+    def test_documents_are_created_automatically_after_search_finishes(self):
+        finished = []
+        def listings(*args):
+            try:
+                yield JOB
+                yield {**JOB, 'url': 'https://www.seek.com.au/job/12345679', 'title': 'Second service role'}
+            finally:
+                finished.append(True)
+        def draft(*args):
+            self.assertTrue(finished)
+            self.assertEqual(len(app.jobs()), 2)
+            return {'summary': 'Customer service experience.', 'skills': ['Customer service']}
+        with patch('discovery.discover', side_effect=listings), patch('local_ai.rewrite', side_effect=draft) as rewrite:
+            self.run_pipeline(False)
+        self.assertEqual(rewrite.call_count, 2)
+        self.assertTrue(all(job['resume'] and job['cover_letter'] for job in app.jobs()))
+        self.assertEqual(automation.current()['queued'], 2)
+        self.assertEqual(automation.current()['prepared'], 2)
+
+    def test_stop_after_discovery_preserves_jobs_without_starting_drafts(self):
+        def listings(*args):
+            yield JOB
+            app.STOP.set()
+        with patch('discovery.discover', side_effect=listings), patch('local_ai.rewrite') as rewrite:
+            self.run_pipeline(False)
+        rewrite.assert_not_called()
+        self.assertEqual(len(app.jobs()), 1)
+        self.assertEqual(automation.current()['status'], 'stopped')
+
     def test_single_site_excludes_saved_jobs_from_other_site(self):
         app.save_job({**JOB, 'id': 'seek-saved', 'profile_id': 'default', 'status': 'saved', 'resume': None})
         config = automation.validate_config(PROFILE, {'sources': ['LinkedIn']})
@@ -101,11 +130,30 @@ class AutomationTests(unittest.TestCase):
 
     def test_prepared_and_uncertain_jobs_are_not_regenerated(self):
         for jid, status in [('ready-job', 'ready'), ('uncertain-job', 'uncertain')]:
-            app.save_job({**JOB, 'url': JOB['url'] + jid, 'id': jid, 'profile_id': 'default', 'status': status, 'resume': {'text': 'Reviewed resume'}, 'cover_letter': 'Reviewed letter'})
+            app.save_job({**JOB, 'url': JOB['url'] + jid, 'id': jid, 'profile_id': 'default', 'status': status, 'resume': {'text': 'Reviewed resume', 'tailoring_version': __import__('tailoring').VERSION}, 'cover_letter': 'Reviewed letter'})
         with patch('discovery.discover', return_value=iter([])), patch('local_ai.rewrite') as rewrite:
             self.run_pipeline(False)
         rewrite.assert_not_called()
         self.assertEqual(app.get_job('uncertain-job')['status'], 'uncertain')
+
+    def test_outdated_unapproved_documents_refresh_on_next_search(self):
+        app.save_job({**JOB, 'id': 'outdated', 'profile_id': 'default', 'status': 'ready', 'resume': {'text': 'Old generic resume'}, 'cover_letter': 'Old letter'})
+        with patch('discovery.discover', return_value=iter([])):
+            self.run_pipeline(False)
+        job = app.get_job('outdated')
+        self.assertEqual(job['resume']['tailoring_version'], __import__('tailoring').VERSION)
+        self.assertNotEqual(job['cover_letter'], 'Old letter')
+        self.assertEqual(automation.current()['prepared'], 1)
+
+    def test_outdated_approved_documents_are_preserved(self):
+        from review import fingerprint
+        job = {**JOB, 'id': 'approved-old', 'profile_id': 'default', 'status': 'ready', 'resume': {'text': 'Approved resume'}, 'cover_letter': 'Approved letter'}
+        job['approved_documents'] = fingerprint(job)
+        app.save_job(job)
+        with patch('discovery.discover', return_value=iter([])), patch('local_ai.rewrite') as rewrite:
+            self.run_pipeline(False)
+        rewrite.assert_not_called()
+        self.assertEqual(app.get_job(job['id'])['approved_documents'], job['approved_documents'])
 
     def test_prepare_mode_does_not_apply(self):
         self.run_pipeline(False)
@@ -117,6 +165,9 @@ class AutomationTests(unittest.TestCase):
             self.run_pipeline(True)
         self.assertEqual(app.jobs()[0]['status'], 'needs_input')
         self.assertEqual(FakeBrowser.attempts, [])
+        self.assertTrue(app.jobs()[0]['resume'])
+        self.assertTrue(app.jobs()[0]['cover_letter'])
+        self.assertIn('Required licence not evidenced', app.jobs()[0]['note'])
 
     def test_letter_generation_failure_does_not_apply(self):
         with patch('local_ai.cover_letter', side_effect=ValueError('Model unavailable')):
@@ -138,6 +189,26 @@ class AutomationTests(unittest.TestCase):
     def test_location_and_role_must_match(self):
         for key in ('role_match', 'location_match'):
             self.assertFalse(automation.suitable({**MATCH, key: False}, 80))
+
+    def test_location_mismatch_cannot_be_overridden_by_ai(self):
+        profile = {**PROFILE, 'location': 'Sydney NSW'}
+        config = automation.validate_config(profile, {})
+        self.assertEqual(config['location'], 'Sydney NSW')
+        with patch('local_ai.assess', return_value=MATCH.copy()) as assess, patch('discovery.discover', return_value=iter([JOB])) as discover:
+            app.RUN_LOCK.acquire()
+            automation.run(profile, config)
+        assess.assert_not_called()
+        self.assertEqual(app.jobs(), [])
+        self.assertEqual(discover.call_args.args[1]['search_location'], 'Sydney NSW')
+
+    def test_unrelated_new_listings_are_not_saved_or_prepared(self):
+        for key in ('role_match', 'location_match'):
+            with self.subTest(key=key), patch('local_ai.assess', return_value={**MATCH, key: False}), patch('discovery.discover', return_value=iter([JOB])), patch('local_ai.rewrite') as rewrite:
+                self.run_pipeline(False)
+                self.assertEqual(app.jobs(), [])
+                self.assertEqual(automation.current()['found'], 0)
+                self.assertEqual(automation.current()['skipped'], 1)
+                rewrite.assert_not_called()
 
 
 if __name__ == '__main__':

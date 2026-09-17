@@ -32,6 +32,154 @@ class BrowserTests(unittest.TestCase):
         cls.override.stop()
         cls.temp.cleanup()
 
+    def test_separate_resume_builder_prefill_drafts_and_download(self):
+        from playwright.sync_api import expect
+        import io
+        import json
+        import zipfile
+        first = {**app.DEFAULT_PROFILE, 'id': 'builder-first', 'title': 'Builder IT', 'name': 'Alex Example', 'email': 'alex@example.invalid', 'experience': 'IT support', 'certifications': 'First Aid'}
+        second = {**app.DEFAULT_PROFILE, 'id': 'builder-second', 'title': 'Builder Care', 'name': 'Casey Example', 'experience': 'Care assistant'}
+        with app.connect() as c:
+            for p in (first, second):
+                c.execute('INSERT INTO profiles VALUES (?, ?)', (p['id'], json.dumps(p)))
+            c.execute("INSERT OR REPLACE INTO settings VALUES ('active_profile', ?)", (first['id'],))
+        page = self.browser.new_page(viewport={'width': 1440, 'height': 1000})
+        errors = []
+        page.on('pageerror', lambda error: errors.append(str(error)))
+        try:
+            page.goto(f'http://127.0.0.1:{self.server.server_port}')
+            page.get_by_role('link', name='Resume Builder', exact=True).click()
+            expect(page.locator('[name=name]')).to_have_value('Alex Example')
+            self.assertEqual(page.locator('[name=certifications]').input_value(), 'First Aid')
+            page.locator('[name=summary]').fill('A resume-only summary <safe>')
+            self.assertIn('A resume-only summary <safe>', page.locator('#resume-preview').inner_text())
+            page.reload()
+            expect(page.locator('[name=summary]')).to_have_value('A resume-only summary <safe>')
+            page.locator('#resume-profile').select_option(second['id'])
+            expect(page.locator('[name=name]')).to_have_value('Casey Example')
+            self.assertEqual(page.locator('[name=summary]').input_value(), '')
+            page.locator('#resume-profile').select_option(first['id'])
+            expect(page.locator('[name=summary]')).to_have_value('A resume-only summary <safe>')
+            self.assertEqual(app.profile()['summary'], '')
+            with page.expect_download() as downloaded:
+                page.get_by_role('button', name='Download Word').click()
+            contents = Path(downloaded.value.path()).read_bytes()
+            with zipfile.ZipFile(io.BytesIO(contents)) as archive:
+                document = archive.read('word/document.xml').decode()
+                self.assertIn('Alex Example', document)
+                self.assertIn('A resume-only summary &lt;safe&gt;', document)
+            with page.expect_download() as downloaded:
+                page.get_by_role('button', name='Download text').click()
+            self.assertEqual(downloaded.value.suggested_filename, 'resume.txt')
+            self.assertIn('A resume-only summary <safe>', Path(downloaded.value.path()).read_text(encoding='utf-8'))
+            with page.expect_download() as downloaded:
+                page.get_by_role('button', name='Download PDF').click()
+            self.assertEqual(downloaded.value.suggested_filename, 'resume.pdf')
+            import pypdfium2 as pdfium
+            with pdfium.PdfDocument(Path(downloaded.value.path()).read_bytes()) as document:
+                pdf_page = document[0]
+                text_page = pdf_page.get_textpage()
+                try:
+                    extracted = text_page.get_text_range()
+                    self.assertIn('Alex Example', extracted)
+                    self.assertIn('A resume-only summary <safe>', extracted)
+                finally:
+                    text_page.close()
+                    pdf_page.close()
+            # Long experience must wrap and paginate, preserving the final entry.
+            long_text = 'Zoë Example\nWORK EXPERIENCE\n' + '\n'.join(
+                f'Position {i}: Customer service & support with <internal> tools. ' * 3
+                for i in range(80)) + '\nFinal achievement'
+            response = page.request.post(
+                f'http://127.0.0.1:{self.server.server_port}/api/resume-builder/download',
+                headers={'X-Session-Token': app.TOKEN},
+                data={'text': long_text, 'format': 'pdf'})
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.headers['content-type'], 'application/pdf')
+            with pdfium.PdfDocument(response.body()) as document:
+                self.assertGreater(len(document), 1)
+                pdf_page = document[len(document) - 1]
+                text_page = pdf_page.get_textpage()
+                try:
+                    self.assertIn('Final achievement', text_page.get_text_range())
+                finally:
+                    text_page.close()
+                    pdf_page.close()
+            page.on('dialog', lambda dialog: dialog.accept())
+            page.get_by_role('button', name='Refill from saved profile').click()
+            expect(page.locator('[name=summary]')).to_have_value('')
+            page.set_viewport_size({'width': 390, 'height': 844})
+            self.assertTrue(page.evaluate('document.documentElement.scrollWidth <= window.innerWidth'))
+            self.assertEqual(errors, [])
+        finally:
+            page.close()
+            with app.connect() as c:
+                c.execute("UPDATE settings SET value='default' WHERE key='active_profile'")
+                c.execute("DELETE FROM profiles WHERE id IN ('builder-first', 'builder-second')")
+
+    def test_resume_builder_job_analysis_final_download_and_stale_results(self):
+        import json
+        from playwright.sync_api import expect
+        from test_resume_builder import PROFILE, JOB
+        p = {**PROFILE, 'id': 'tailoring-ui', 'title': 'Tailoring test'}
+        with app.connect() as c:
+            c.execute('INSERT INTO profiles VALUES (?, ?)', (p['id'], json.dumps(p)))
+            c.execute("INSERT OR REPLACE INTO settings VALUES ('active_profile', ?)", (p['id'],))
+        page = self.browser.new_page(viewport={'width': 1440, 'height': 1000})
+        errors = []
+        page.on('pageerror', lambda error: errors.append(str(error)))
+        try:
+            page.goto(f'http://127.0.0.1:{self.server.server_port}/resume-builder')
+            expect(page.locator('[name=name]')).to_have_value(p['name'])
+            page.locator('#target-title').fill(JOB['title'])
+            page.locator('#target-description').fill(JOB['description'])
+            page.locator('#resume-length').select_option('concise')
+            page.locator('#resume-tone').select_option('formal')
+            page.locator('#resume-emphasis').select_option('achievements')
+            page.locator('#resume-max-skills').select_option('6')
+            page.locator('#tailor-engine').select_option('basic')
+            page.get_by_role('button', name='Analyze job & tailor resume').click()
+            expect(page.locator('#preview-heading')).to_have_text('Final tailored resume', timeout=15000)
+            final_text = page.locator('#resume-preview').inner_text()
+            self.assertIn('Service Assistant | Example Co | 2022-2024', final_text)
+            self.assertNotIn('Python', final_text)
+            self.assertNotIn('forklift licence', final_text.lower())
+            self.assertIn('forklift licence', page.locator('#analysis-requirements').inner_text())
+            self.assertEqual(page.locator('[name=experience]').input_value(), p['experience'])
+            with page.expect_download() as downloaded:
+                page.get_by_role('button', name='Download text').click()
+            self.assertEqual(Path(downloaded.value.path()).read_text(encoding='utf-8'), final_text)
+            page.reload()
+            expect(page.locator('#preview-heading')).to_have_text('Final tailored resume')
+            expect(page.locator('#resume-length')).to_have_value('concise')
+            expect(page.locator('#resume-tone')).to_have_value('formal')
+            expect(page.locator('#resume-max-skills')).to_have_value('6')
+            self.assertEqual(page.locator('#resume-preview').inner_text(), final_text)
+            page.get_by_text('Edit final resume text', exact=True).click()
+            page.locator('#final-resume-text').fill(final_text + '\nAdditional verified detail')
+            with page.expect_download() as downloaded:
+                page.get_by_role('button', name='Download text').click()
+            self.assertIn('Additional verified detail', Path(downloaded.value.path()).read_text(encoding='utf-8'))
+            page.set_viewport_size({'width': 390, 'height': 844})
+            self.assertTrue(page.evaluate('document.documentElement.scrollWidth <= window.innerWidth'))
+            page.locator('#resume-max-skills').select_option('10')
+            expect(page.locator('#preview-heading')).to_have_text('Live preview')
+            page.locator('#target-description').fill(JOB['description'] + '\nWeekend work required.')
+            expect(page.locator('#tailor-results')).to_be_hidden()
+            expect(page.locator('#preview-heading')).to_have_text('Live preview')
+            self.assertIn('Python', page.locator('#resume-preview').inner_text())
+            page.locator('#resume-profile').select_option('default')
+            expect(page.locator('#target-description')).to_have_value('')
+            page.locator('#resume-profile').select_option(p['id'])
+            expect(page.locator('#target-description')).to_have_value(JOB['description'] + '\nWeekend work required.')
+            self.assertEqual(app.profile()['experience'], p['experience'])
+            self.assertEqual(errors, [])
+        finally:
+            page.close()
+            with app.connect() as c:
+                c.execute("UPDATE settings SET value='default' WHERE key='active_profile'")
+                c.execute("DELETE FROM profiles WHERE id='tailoring-ui'")
+
     def test_account_confirmation_banner(self):
         import accounts
         page = self.browser.new_page()
@@ -164,6 +312,78 @@ class BrowserTests(unittest.TestCase):
         self.assertNotIn('<p>', result['description'])
         self.assertIn('Darwin', result['location'])
         page.close()
+
+    def test_confirmation_must_be_visible_and_outside_job_description(self):
+        page = self.browser.new_page()
+        try:
+            page.set_content('<main id="job-details"><h2>Application submitted</h2></main><h2 hidden>Application sent</h2>')
+            self.assertFalse(BrowserAgent.confirmed(page))
+            page.set_content('<div role="status"><p>Thank you for applying</p></div>')
+            self.assertTrue(BrowserAgent.confirmed(page))
+        finally:
+            page.close()
+
+    def test_submission_recheck_reads_exact_job_without_clicking_apply(self):
+        from types import SimpleNamespace
+        page_context = self.browser.new_context()
+        clicks = []
+        page_context.expose_binding('clicked', lambda *args: clicks.append(True))
+        url = 'https://www.seek.com.au/job/12345678'
+        page_context.route(url, lambda route: route.fulfill(content_type='text/html', body='<div data-automation="job-application-status">You applied on 14 September 2026</div><button onclick="clicked()">Apply</button>'))
+        agent = SimpleNamespace(context=page_context, stopped=lambda: False)
+        try:
+            confirmed, note = BrowserAgent.verify_submission(agent, {'url': url, 'source': 'SEEK'})
+            self.assertTrue(confirmed)
+            self.assertIn('You applied', note)
+            self.assertEqual(clicks, [])
+        finally:
+            page_context.close()
+
+    def test_job_buttons_review_approve_and_reject_automatic_queue(self):
+        job = {'id': 'decision-ui', 'profile_id': app.profile()['id'], 'url': 'https://www.seek.com.au/job/55500011',
+               'title': 'Decision fixture job', 'company': 'Fictional', 'source': 'SEEK', 'status': 'ready',
+               'description': 'Fixture description', 'note': 'Ready',
+               'resume': {'text': 'Decision fixture resume', 'matched': [], 'note': 'Test'}, 'cover_letter': 'Decision fixture letter'}
+        app.save_job(job)
+        page = self.browser.new_page(viewport={'width': 1200, 'height': 900})
+        try:
+            with patch('submission_queue.submit_when_idle') as worker:
+                page.goto(f'http://127.0.0.1:{self.server.server_port}')
+                page.get_by_role('button', name='Review Decision fixture job', exact=True).click()
+                page.get_by_text('Decision fixture resume', exact=True).wait_for()
+                page.get_by_text('Decision fixture letter', exact=True).wait_for()
+                page.locator('[data-close="detail-dialog"]').click()
+                page.get_by_label('Application mode', exact=True).select_option('auto')
+                page.get_by_role('button', name='Approve Decision fixture job', exact=True).click()
+                page.locator('#toast').get_by_text('Approved and queued', exact=False).wait_for()
+                worker.assert_called_once()
+                self.assertTrue(app.get_job(job['id'])['submission_requested'])
+                page.get_by_role('button', name='Reject Decision fixture job', exact=True).click()
+                page.locator('#toast').get_by_text('Rejected.', exact=False).wait_for()
+                self.assertFalse(app.get_job(job['id'])['submission_requested'])
+                self.assertEqual(app.get_job(job['id'])['status'], 'rejected')
+        finally:
+            page.close()
+            with app.connect() as connection:
+                connection.execute('DELETE FROM jobs WHERE id=?', (job['id'],))
+
+    def test_unrelated_jobs_can_be_hidden_without_deleting_them(self):
+        job = {'id': 'unrelated-ui', 'profile_id': app.profile()['id'], 'url': 'https://www.seek.com.au/job/12344999',
+               'title': 'Unrelated fixture role', 'company': 'Fictional', 'source': 'SEEK', 'description': 'Fixture description',
+               'status': 'saved', 'resume': None, 'assessment': {'role_match': False, 'location_match': True}}
+        app.save_job(job)
+        page = self.browser.new_page()
+        try:
+            page.goto(f'http://127.0.0.1:{self.server.server_port}')
+            page.locator('#relevant-only').wait_for()
+            self.assertEqual(page.get_by_role('button', name=job['title'], exact=True).count(), 0)
+            page.locator('#relevant-only').uncheck()
+            page.get_by_role('button', name=job['title'], exact=True).wait_for()
+            self.assertIsNotNone(app.get_job(job['id']))
+        finally:
+            page.close()
+            with app.connect() as connection:
+                connection.execute('DELETE FROM jobs WHERE id=?', (job['id'],))
 
     def test_signed_in_linkedin_layout_and_seek_domain(self):
         from discovery import extract_job

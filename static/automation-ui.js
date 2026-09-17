@@ -10,9 +10,10 @@ agentSection.innerHTML = `<div class="eyebrow">FROM SEARCH TO APPLICATION</div>
 <h1>One search. More possibilities.</h1>
 <p class="muted">Search in the background, match against your profile, and prepare a resume and cover letter with local Qwen. You can keep using the dashboard while it runs.</p>
 <form id="agent-form" class="panel">
+<p id="agent-criteria" class="muted"></p>
 <p>Target roles and location come from <button id="agent-profile" type="button" class="text-button">My profile ↗</button>. Separate multiple roles with commas.</p>
 <div class="grid"><label>Job sites<select name="source"><option value="both">LinkedIn + SEEK</option><option value="LinkedIn">LinkedIn only</option><option value="SEEK">SEEK only</option></select></label>
-<label>Run mode<select name="submit"><option value="false">Search and prepare for review</option></select></label></div>
+<label>Run mode<select name="submit"><option value="false">Automatically create resume + cover letter</option></select></label></div>
 <div class="grid"><label>Maximum jobs to inspect<input name="max_jobs" type="number" min="1" max="30" value="10" required></label>
 <label>Maximum application attempts<input name="max_applications" type="number" min="1" max="10" value="3" required></label>
 <label>Minimum Qwen match score<input name="min_score" type="number" min="1" max="100" value="80" required></label>
@@ -20,12 +21,13 @@ agentSection.innerHTML = `<div class="eyebrow">FROM SEARCH TO APPLICATION</div>
 <p class="muted">A score is an AI estimate. Mandatory requirements, target role and location must also match. Unknown eligibility needs your input. If a site needs sign-in or verification, connect it in My profile and retry. Other selected sites continue searching.</p>
 <button type="submit" class="primary" id="agent-start">Search LinkedIn + SEEK ↗</button>
 <button type="button" id="agent-stop">Stop run</button>
-</form><div class="panel"><h2>Run activity</h2><p id="agent-summary">No run started.</p><ol id="agent-events" class="agent-events"></ol></div>`;
+</form><div class="panel"><h2>Run activity</h2><p id="agent-summary">No run started.</p><button type="button" id="agent-results" hidden>View generated documents</button><ol id="agent-events" class="agent-events"></ol></div>`;
 $('footer').before(agentSection);
 $('#agent-profile').onclick = () => view('profile');
+$('#agent-results').onclick = () => view('board');
 const sourceSelect = $('#agent-form select[name=source]');
 function updateSearchLabel() {
-    $('#agent-start').textContent = 'Search ' + (sourceSelect.value === 'both' ? 'LinkedIn + SEEK' : sourceSelect.value) + ' in background';
+    $('#agent-start').textContent = 'Search ' + (sourceSelect.value === 'both' ? 'LinkedIn + SEEK' : sourceSelect.value) + ' + create documents';
 }
 sourceSelect.onchange = updateSearchLabel;
 updateSearchLabel();
@@ -41,8 +43,10 @@ $('#agent-form').onsubmit = async e => {
     for (const key of ['max_jobs', 'max_applications', 'min_score', 'pages']) config[key] = Number(values[key]);
     $('#agent-start').disabled = true;
     try {
+        await saveProfileChanges();
+        await refresh();
         await api('/api/automation/start', config);
-        toast('Background search started. You can keep using the dashboard.');
+        toast('Search started. Resumes and cover letters will be created automatically afterwards.');
         await refresh(); await refreshAgent();
     } catch (err) { toast(err.message); }
     finally { await refreshAgent().catch(() => {}); }
@@ -52,12 +56,14 @@ $('#agent-stop').onclick = async () => {
     catch (err) { toast(err.message); }
 };
 async function refreshAgent() {
+    $('#agent-criteria').textContent = `Profile: ${state.profile.title || 'Default profile'} · Target roles: ${state.profile.roles || 'Add target roles in My profile'} · Location: ${state.job_search_location || 'Add a city or search area in My profile'}`;
     const response = await fetch('/api/automation');
     if (!response.ok) return;
     const run = await response.json();
+    $('#agent-results').hidden = !(run.prepared > 0);
     $('#agent-start').disabled = Boolean(state.running || state.preparing);
     $('#agent-stop').disabled = !state.running;
-    $('#agent-summary').textContent = run.status === 'idle' ? 'No run started.' : `${run.status} / ${run.stage || run.status} · ${run.found || 0} found · ${run.revisited || 0} saved jobs checked / ${run.prepared || 0} document pairs prepared · ${run.attempted || 0} attempted · ${run.submitted || 0} confirmed submitted`;
+    $('#agent-summary').textContent = run.status === 'idle' ? 'No run started.' : `${run.status} / ${run.stage || run.status} · ${run.found || 0} relevant new jobs · ${run.skipped || 0} excluded or unsuitable · ${run.revisited || 0} saved jobs checked / ${run.prepared || 0} / ${run.queued || run.prepared || 0} resume and cover-letter pairs created · ${run.attempted || 0} attempted · ${run.submitted || 0} confirmed submitted`;
     $('#agent-events').innerHTML = (run.events || []).slice().reverse().map(event => `<li><small>${esc(new Date(event.time).toLocaleTimeString())}</small> ${esc(event.message)}</li>`).join('');
 }
 const resumeDetail = detail;
@@ -70,10 +76,30 @@ detail = function(id) {
         textLink.textContent = 'Download plain text (.txt)';
         $('#detail-content .detail-actions').appendChild(textLink);
     }
+    if (job.documents_outdated && ['ready', 'saved', 'needs_input'].includes(job.status)) {
+        const refreshDraft = document.createElement('div');
+        refreshDraft.innerHTML = '<p class="muted">These documents use older tailoring. Unapproved drafts refresh automatically during your next search.</p>';
+        const button = document.createElement('button');
+        button.textContent = 'Refresh these documents';
+        button.disabled = Boolean(state.running || state.preparing);
+        button.onclick = async () => {
+            try {
+                await api('/api/prepare', {ids: [id], engine: 'ollama'});
+                $('#detail-dialog').close();
+                await refresh();
+                toast('Refreshing this resume and cover letter against the job description. Review the new documents before approving.');
+            } catch (err) { toast(err.message); }
+        };
+        refreshDraft.appendChild(button);
+        $('#detail-content').appendChild(refreshDraft);
+    }
     const extra = document.createElement('div');
     const match = job.assessment;
     extra.innerHTML = (match ? `<h3>Suitability assessment · ${esc(match.score)}/100</h3><p>${esc(match.reason)}</p><p>Missing requirements: ${esc(match.missing_requirements.join('; ') || 'None identified')}</p><p>Needs clarification: ${esc(match.unknown_requirements.join('; ') || 'None identified')}</p>` : '') +
         (job.cover_letter ? `<h3>Cover letter</h3><a href="/api/cover-letter/${job.id}">Download cover letter (.docx)</a><pre>${esc(job.cover_letter)}</pre>` : '');
+    if (job.resume?.job_priorities?.length) {
+        extra.innerHTML += `<details><summary>Job requirements used for these drafts</summary><ul>${job.resume.job_priorities.map(item => `<li>${esc(item)}</li>`).join('')}</ul></details>`;
+    }
     $('#detail-content').appendChild(extra);
 };
 refreshAgent().catch(() => {});
@@ -88,7 +114,7 @@ combinedSearchNav.onclick = () => { view('automation'); $('#breadcrumb').textCon
 $('#agent-form input[name=max_applications]').closest('label').hidden = true;
 const combinedSearchNote = document.createElement('p');
 combinedSearchNote.className = 'muted';
-combinedSearchNote.textContent = 'One run checks unfinished saved jobs from your selected sites and searches for new listings in the background. Connect accounts in My profile if a site requests sign-in. Suitable jobs get a tailored resume and cover letter for your review.';
+combinedSearchNote.textContent = 'One run checks unfinished saved jobs from your selected sites and searches for new listings in the background. Connect accounts in My profile if a site requests sign-in. After searching, qualifying matches automatically receive a tailored resume and cover letter. Open each job to review or download both documents.';
 $('#agent-form').before(combinedSearchNote);
 const dashboardSearch = document.createElement('button');
 dashboardSearch.className = 'primary';
@@ -98,3 +124,9 @@ const dashboardActions = document.createElement('div');
 dashboardActions.className = 'dashboard-actions';
 $('#add').before(dashboardActions);
 dashboardActions.append(dashboardSearch, $('#add'));
+
+const relevanceFilter = document.createElement('label');
+relevanceFilter.innerHTML = '<input id="relevant-only" type="checkbox" checked style="display:inline;width:auto;margin-right:8px"> Hide jobs assessed as outside the target role or location';
+$('#job-list').before(relevanceFilter);
+$('#relevant-only').onchange = () => { selected.clear(); render(); };
+render();

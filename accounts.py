@@ -51,6 +51,10 @@ def connect_worker(profile, source):
         with BrowserAgent(browser_data(profile), app.STOP) as agent:
             prepare(agent, profile, [source])
         CONNECTION_NOTE[profile['id']] = f'{source} account confirmed. Start combined search when ready.'
+        from submission_verification import recheck
+        uncertain = [job['id'] for job in app.jobs() if job.get('profile_id', 'default') == profile['id']
+                     and job['source'] == source and job['status'] == 'uncertain'][:10]
+        recheck(uncertain, profile)
     except Exception as exc:
         CONNECTION_NOTE[profile['id']] = f'{source} connection stopped: {str(exc)[:250]}'
     finally:

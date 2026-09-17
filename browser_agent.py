@@ -20,7 +20,7 @@ class BrowserAgent:
         self.playwright = sync_playwright().start()
         try:
             self.context = self.playwright.chromium.launch_persistent_context(
-                str(self.data / 'chrome-browser'), channel='chrome', headless=self.headless, viewport={'width': 1280, 'height': 900})
+                str(self.data / 'chrome-browser'), channel='chrome', headless=self.headless, args=['--disable-quic'], viewport={'width': 1280, 'height': 900})
             self.context.set_default_timeout(6000)
         except Exception:
             self.playwright.stop()
@@ -33,8 +33,42 @@ class BrowserAgent:
 
     @staticmethod
     def confirmed(page):
-        # Avoid matching "application submitted" in the underlying job description.
-        return page.get_by_role('heading', name=re.compile(r'^(application (sent|submitted)|your application (was|has been) (sent|submitted)|you successfully applied|application complete)[.!]?$', re.I)).count() > 0
+        pattern = re.compile(r'^(application (sent|submitted)|your application (was|has been) (sent|submitted)|you successfully applied|application complete|thanks for applying|thank you for (applying|your application))[.!]?$', re.I)
+        nodes = page.get_by_role('heading', name=pattern).all()
+        for role in ('status', 'alert', 'dialog'):
+            nodes.extend(page.get_by_role(role).get_by_text(pattern, exact=True).all())
+        return any(node.is_visible() and not node.evaluate("el => !!el.closest('#job-details, .show-more-less-html__markup, [data-automation=jobAdDetails]')") for node in nodes)
+
+    def verify_submission(self, job):
+        """Read the exact job page for an applied status; never click an apply control."""
+        from app import validate_url
+        page = self.context.new_page()
+        try:
+            page.goto(job['url'], wait_until='domcontentloaded', timeout=30000)
+            from discovery import challenged
+            if challenged(page):
+                return False, 'The site requires sign-in or verification before it can show application status.'
+            if validate_url(page.url)[0] != validate_url(job['url'])[0]:
+                return False, 'The site did not open the original job page.'
+            scopes = ('.jobs-s-apply, .jobs-unified-top-card, .job-details-jobs-unified-top-card',
+                      '[data-automation="job-application-status"], [data-automation="appliedStatus"], [data-automation="job-detail-apply"]')
+            selectors = scopes[0] if job['source'] == 'LinkedIn' else scopes[1]
+            pattern = re.compile(r'^(you applied(?:\s+on\s+.+)?|applied(?:\s+on\s+.+)?|application (submitted|sent))[.!]?$', re.I)
+            for _ in range(3):
+                if self.stopped():
+                    return False, 'Automatic status check stopped.'
+                scope = page.locator(selectors)
+                for node in scope.get_by_text(pattern, exact=True).all():
+                    if node.is_visible():
+                        return True, 'Job page confirms: ' + node.inner_text().strip()[:200]
+                page.wait_for_timeout(1000)
+            return False, 'The job page did not provide a recognised applied status.'
+        except Exception as exc:
+            detail = str(exc).splitlines()[0][:200] if str(exc) else type(exc).__name__
+            return False, 'Status could not be verified: ' + detail
+        finally:
+            if not page.is_closed():
+                page.close()
 
     def handoff(self, page, reason):
         # The user may submit while the agent is waiting in this visible window.

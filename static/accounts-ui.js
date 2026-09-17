@@ -56,16 +56,16 @@ detail = function(id) {
     const panel = document.createElement('div');
     panel.className = 'panel';
     if (job.status === 'ready' && job.resume && job.cover_letter) {
-        panel.innerHTML = '<h3>Review before submission</h3><p>Read the tailored resume and cover letter above. Approval applies to these documents and attachments. After approval, select this job and run automatic submission.</p>';
+        panel.innerHTML = '<h3>Review before submission</h3><p>Read the tailored resume and cover letter above. Approval applies to these documents and attachments. In Automatic submission mode, Approve queues this job immediately. In Manual handoff mode, approval saves your decision.</p>';
         const approve = document.createElement('button');
         approve.textContent = job.documents_approved ? 'Documents approved' : 'I reviewed both documents - approve';
-        approve.disabled = Boolean(job.documents_approved || state.running || state.preparing);
+        approve.disabled = Boolean(job.submission_requested || job.submission_in_progress || state.preparing || (job.documents_approved && $('#mode').value !== 'auto'));
         approve.onclick = async () => {
             try {
-                await api('/api/review/approve', {id, review_token: job.review_token});
+                await approveJob(id);
                 await refresh();
                 approve.textContent = 'Documents approved'; approve.disabled = true;
-                toast('Approved. Select this job and run it when ready to submit.');
+                toast($('#mode').value === 'auto' ? 'Approved and queued for automatic submission.' : 'Documents approved.');
             } catch (err) { toast(err.message); }
         };
         panel.appendChild(approve);
@@ -77,7 +77,7 @@ detail = function(id) {
 const runMode = $('#agent-form select[name=submit]');
 runMode.innerHTML = '<option value="false">Search and prepare for my review</option>';
 const reviewNotice = document.createElement('p');
-reviewNotice.textContent = 'New applications stop in the pipeline for your review. Open each job to read its resume and cover letter, approve them, then use Run selected to submit.';
+reviewNotice.textContent = 'Use Review to read each resume and cover letter. Select Automatic submission in the pipeline, then Approve beside a job to apply automatically. Reject excludes a job from submission.';
 $('#agent-form').prepend(reviewNotice);
 
 const connectionControls = document.createElement('div');

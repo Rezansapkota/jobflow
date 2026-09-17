@@ -93,8 +93,8 @@ def extract_job(page, source, canonical_url):
 
 
 def challenged(page):
-    return bool(re.search(r'/login|/checkpoint|/authwall|/sign-in', page.url)
-                or re.search(r'just a moment|security check|verify.*human|access denied', page.title(), re.I)
+    return bool(re.search(r'/login|/checkpoint|/authwall|/sign-in|/signup|/sign-up', page.url)
+                or re.search(r'just a moment|security check|verify.*human|access denied|^(sign in|sign up|join).*linkedin', page.title(), re.I)
                 or page.locator('input[type="password"]:visible, iframe[src*="captcha"]:visible').count())
 
 
