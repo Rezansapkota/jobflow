@@ -4,6 +4,13 @@ import accounts
 
 
 class AccountTests(unittest.TestCase):
+    def test_login_credentials_require_both_fields(self):
+        self.assertIsNone(accounts.login_credentials({}))
+        for body in ({'username': 'a'}, {'password': 'secret'}, {'username': [], 'password': 'secret'}):
+            with self.assertRaises(ValueError):
+                accounts.login_credentials(body)
+        self.assertEqual(accounts.login_credentials({'username': ' a ', 'password': ' b '})['password'], ' b ')
+
     def tearDown(self):
         accounts.PENDING = None
         accounts.CONFIRMED.clear()

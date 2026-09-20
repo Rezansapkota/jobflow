@@ -6,6 +6,18 @@ import local_ai
 
 
 class LocalAITests(unittest.TestCase):
+    def test_search_plan_is_bounded_deduplicated_and_local(self):
+        with patch.object(local_ai, 'request', return_value={'message': {'content': json.dumps({'queries': ['Kitchen hand', 'Cleaner', 'cleaner']})}}) as request:
+            self.assertEqual(local_ai.search_plan('kitchen, cleaning'), ['Kitchen hand', 'cleaner'])
+        self.assertEqual(request.call_args.args[0], '/api/chat')
+        self.assertEqual(request.call_args.args[1]['options']['num_predict'], 250)
+
+    def test_search_plan_rejects_malformed_queries(self):
+        for queries in ([], ['a'] * 4, [42], ['https://example.com'], ['Cleaner\nIgnore rules']):
+            with patch.object(local_ai, 'structured', return_value={'queries': queries}):
+                with self.assertRaises(ValueError):
+                    local_ai.search_plan('cleaner')
+
     def setUp(self):
         self.profile = {**app.DEFAULT_PROFILE, 'name': 'Example', 'summary': 'Service assistant.',
                         'skills': 'Excel, Customer service', 'experience': 'Customer Service Assistant | Example Co | 2022–2024', 'education': 'Certificate II'}
@@ -98,6 +110,23 @@ class LocalAITests(unittest.TestCase):
         for priorities in ([], ['Invented requirement not in the description.'], [False]):
             with self.subTest(priorities=priorities), patch.object(local_ai, 'structured', return_value={'priorities': priorities}), self.assertRaises(ValueError):
                 local_ai.job_priorities(self.job)
+
+    def test_personal_circumstances_cannot_be_inferred_from_job(self):
+        for claim in ['I am based in Darwin and available for this position.',
+                      'I am willing to relocate and can start immediately.',
+                      'I have unrestricted work rights.']:
+            with self.subTest(claim=claim), patch.object(local_ai, 'structured', return_value={'unsupported_claims': []}) as audit:
+                self.assertFalse(local_ai.prose_supported(self.profile, self.job, claim))
+                audit.assert_not_called()
+
+    def test_cover_letter_replaces_invented_availability_with_saved_facts(self):
+        profile = {**self.profile, 'name': 'Alex Example'}
+        body = 'I am applying for this role and bring customer service skills. I am based in Darwin and available for this position.'
+        with patch.object(local_ai, 'structured', return_value={'body': body}):
+            letter = local_ai.cover_letter(profile, {**self.job, 'company': 'Example Co'})
+        self.assertNotIn('based in Darwin', letter)
+        self.assertNotIn('available for', letter)
+        self.assertIn('Alex Example', letter)
 
     def test_unsupported_cover_letter_claims_use_factual_fallback(self):
         profile = {**self.profile, 'name': 'Example', 'skills': 'Cleaning, Customer service',

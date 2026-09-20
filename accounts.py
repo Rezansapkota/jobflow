@@ -43,21 +43,67 @@ def connection_note(profile_id):
     return CONNECTION_NOTE.get(profile_id, '')
 
 
-def connect_worker(profile, source):
+def login_credentials(body):
+    username, password = body.get('username', ''), body.get('password', '')
+    if not isinstance(username, str) or not isinstance(password, str):
+        raise ValueError('Enter a valid login ID and password.')
+    if not username and not password:
+        return None
+    if not username.strip() or not password or len(username) > 320 or len(password) > 1024:
+        raise ValueError('Enter both your login ID and password.')
+    return {'username': username.strip(), 'password': password}
+
+
+def fill_login(page, source, credentials):
+    """Only fill recognised controls on the selected site's HTTPS origin."""
+    import re
+    hosts = ('linkedin.com', 'www.linkedin.com') if source == 'LinkedIn' else ('seek.com.au', 'www.seek.com.au', 'au.seek.com')
+    def trusted():
+        parsed = urlparse(page.url)
+        return parsed.scheme == 'https' and parsed.hostname in hosts and parsed.port in (None, 443)
+    if not trusted():
+        return False
+    user = page.locator('input[name="session_key"]:visible, input[autocomplete="username"]:visible, input[type="email"]:visible, input[name="username"]:visible')
+    if user.count() != 1:
+        return False
+    user.fill(credentials['username'])
+    password = page.locator('input[type="password"]:visible')
+    if not password.count():
+        next_button = page.get_by_role('button', name=re.compile(r'^(continue|next|continue with email)$', re.I))
+        if next_button.count() != 1 or not trusted():
+            return False
+        next_button.click()
+        try:
+            password.wait_for(state='visible', timeout=8000)
+        except Exception:
+            return False
+    if not trusted() or password.count() != 1:
+        return False
+    password.fill(credentials['password'])
+    submit = page.get_by_role('button', name=re.compile(r'^(sign in|log in|login)$', re.I))
+    if submit.count() != 1 or not trusted():
+        return False
+    submit.click()
+    return True
+
+
+def connect_worker(profile, source, credentials=None):
     import app
     from browser_agent import BrowserAgent
     CONNECTION_NOTE[profile['id']] = f'Opening {source} in Chrome...'
     try:
         with BrowserAgent(browser_data(profile), app.STOP) as agent:
-            prepare(agent, profile, [source])
+            prepare(agent, profile, [source], credentials)
         CONNECTION_NOTE[profile['id']] = f'{source} account confirmed. Start combined search when ready.'
         from submission_verification import recheck
         uncertain = [job['id'] for job in app.jobs() if job.get('profile_id', 'default') == profile['id']
                      and job['source'] == source and job['status'] == 'uncertain'][:10]
         recheck(uncertain, profile)
     except Exception as exc:
-        CONNECTION_NOTE[profile['id']] = f'{source} connection stopped: {str(exc)[:250]}'
+        CONNECTION_NOTE[profile['id']] = f'{source} connection stopped. Retry login or complete sign-in in the browser.'
     finally:
+        if credentials:
+            credentials.clear()
         app.RUN_LOCK.release()
 
 
@@ -68,7 +114,7 @@ def confirm(token, profile_id):
         CONFIRMED.set()
 
 
-def prepare(agent, profile, sources):
+def prepare(agent, profile, sources, credentials=None):
     global PENDING
     from discovery import challenged
     for source in sources:
@@ -76,7 +122,17 @@ def prepare(agent, profile, sources):
             raise ValueError('Account setup stopped.')
         page = agent.context.new_page()
         try:
-            page.goto(account_url(profile, source), wait_until='domcontentloaded', timeout=45000)
+            target = ('https://www.linkedin.com/login' if source == 'LinkedIn' else DEFAULTS['SEEK']) if credentials else account_url(profile, source)
+            page.goto(target, wait_until='domcontentloaded', timeout=45000)
+            if credentials:
+                try:
+                    page.wait_for_timeout(1500)
+                    filled = fill_login(page, source, credentials)
+                    CONNECTION_NOTE[profile['id']] = ('Login submitted. Complete any verification in Chrome, then confirm Account ready.' if filled else 'Complete login in Chrome: the site requires verification or a different sign-in step.')
+                except Exception:
+                    CONNECTION_NOTE[profile['id']] = 'Complete login in Chrome. Automatic login could not finish.'
+                finally:
+                    credentials.clear()
             with LOCK:
                 CONFIRMED.clear()
                 PENDING = {'id': uuid.uuid4().hex, 'profile_id': profile.get('id', 'default'), 'source': source}

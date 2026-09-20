@@ -10,6 +10,69 @@ from browser_agent import BrowserAgent
 
 
 class BrowserTests(unittest.TestCase):
+    def test_favicon_loads_without_content_security_errors(self):
+        page = self.browser.new_page()
+        errors = []
+        page.on('console', lambda message: errors.append(message.text) if message.type == 'error' else None)
+        try:
+            for path in ('/', '/resume-builder'):
+                page.goto(f'http://127.0.0.1:{self.server.server_port}{path}')
+                icon = page.locator('link[rel=icon]').get_attribute('href')
+                self.assertEqual(icon, '/favicon.svg')
+                response = page.request.get(f'http://127.0.0.1:{self.server.server_port}{icon}')
+                self.assertEqual(response.status, 200)
+                self.assertEqual(response.headers['content-type'], 'image/svg+xml')
+                page.wait_for_load_state('networkidle')
+            self.assertEqual(errors, [])
+        finally:
+            page.close()
+
+    def test_login_fills_only_selected_site(self):
+        from accounts import fill_login
+        context = self.browser.new_context()
+        context.route('**/*', lambda route: route.fulfill(content_type='text/html', body='<input type="email"><input type="password"><button onclick="window.loginClicked=true">Sign in</button>'))
+        page = context.new_page()
+        try:
+            page.goto('https://www.linkedin.com/login')
+            credentials = {'username': 'example@example.invalid', 'password': 'fictional-test-password'}
+            self.assertTrue(fill_login(page, 'LinkedIn', credentials))
+            self.assertEqual(page.locator('input[type=password]').input_value(), credentials['password'])
+            self.assertTrue(page.evaluate('window.loginClicked'))
+            page.goto('https://untrusted.example/login')
+            self.assertFalse(fill_login(page, 'LinkedIn', credentials))
+            self.assertEqual(page.locator('input[type=password]').input_value(), '')
+        finally:
+            context.close()
+
+    def test_delayed_seek_verification_is_detected_before_extraction(self):
+        from discovery import wait_for_job, challenged
+        page = self.browser.new_page()
+        try:
+            page.set_content('''<title>SEEK</title><p>Loading</p><script>
+                setTimeout(() => document.body.innerHTML = '<p>Help us keep SEEK secure, confirm you are human.</p>', 150);
+            </script>''')
+            wait_for_job(page)
+            self.assertTrue(challenged(page))
+        finally:
+            page.close()
+
+    def test_delayed_seek_description_can_be_extracted(self):
+        from discovery import wait_for_job, extract_job
+        page = self.browser.new_page()
+        try:
+            page.set_content('''<h1 data-automation="job-detail-title">Care worker</h1>
+                <span data-automation="advertiser-name">Fictional Care</span>
+                <span data-automation="job-detail-location">Darwin NT</span>
+                <div data-automation="jobAdDetails"></div><script>
+                setTimeout(() => document.querySelector('[data-automation="jobAdDetails"]').textContent = 'Support residents with daily activities and follow documented care plans. Communicate with the care team and keep accurate records.', 150);
+            </script>''')
+            wait_for_job(page)
+            result = extract_job(page, 'SEEK', 'https://www.seek.com.au/job/12345678')
+            self.assertEqual(result['title'], 'Care worker')
+            self.assertGreater(len(result['description']), 100)
+        finally:
+            page.close()
+
     @classmethod
     def setUpClass(cls):
         from playwright.sync_api import sync_playwright
@@ -221,7 +284,7 @@ class BrowserTests(unittest.TestCase):
         page.get_by_role('button', name='Save profile', exact=True).click()
         page.locator('#profile-saved').get_by_text('Saved', exact=True).wait_for()
         page.get_by_role('button', name='Applications', exact=False).first.click()
-        page.get_by_role('button', name='Add a job', exact=False).click()
+        page.get_by_role('button', name='Add job manually', exact=True).click()
         page.get_by_label('Job link').fill('https://www.seek.com.au/job/12345678?ref=search')
         page.get_by_label('Job title', exact=True).fill('Customer Service Officer')
         page.get_by_label('Company', exact=True).fill('Example Company')

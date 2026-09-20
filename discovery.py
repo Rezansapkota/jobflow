@@ -20,11 +20,21 @@ def clean_html(value):
     return ' '.join(parser.parts).strip()
 
 
-def search_url(source, role, location, page=0):
+def search_url(source, role, location, page=0, posted_days=0, sort_order='relevance'):
     if source == 'LinkedIn':
-        return 'https://www.linkedin.com/jobs/search/?' + urlencode({'keywords': role, 'location': location, 'start': page * 25})
+        params = {'keywords': role, 'location': location, 'start': page * 25}
+        if posted_days:
+            params['f_TPR'] = f'r{posted_days * 86400}'
+        if sort_order == 'newest':
+            params['sortBy'] = 'DD'
+        return 'https://www.linkedin.com/jobs/search/?' + urlencode(params)
     slug = lambda value: quote(re.sub(r'\s+', '-', value.strip()), safe='')
-    return f'https://www.seek.com.au/{slug(role)}-jobs/in-{slug(location)}?page={page + 1}'
+    params = {'page': page + 1}
+    if posted_days:
+        params['daterange'] = posted_days
+    if sort_order == 'newest':
+        params['sortmode'] = 'ListedDate'
+    return f'https://www.seek.com.au/{slug(role)}-jobs/in-{slug(location)}?' + urlencode(params)
 
 
 def posting_from_json(value):
@@ -57,7 +67,7 @@ def extract_job(page, source, canonical_url):
                 if posting.get('jobLocationType'):
                     location += ' ' + str(posting['jobLocationType'])
                 if title and company and len(description) >= 100:
-                    return dict(url=canonical_url, source=source, title=title, company=company, description=description, location=location)
+                    return dict(url=canonical_url, source=source, title=title, company=company, description=description, location=location, date_posted=str(posting.get('datePosted') or ''))
         except (ValueError, TypeError):
             continue
     selectors = {
@@ -89,13 +99,30 @@ def extract_job(page, source, canonical_url):
                     location = main_lines[position + 1].split('\u00b7')[0].strip() if position + 1 < len(main_lines) else ''
     if not title or not company or len(description) < 100:
         raise ValueError('Could not extract a complete job title, company and description. No application prepared.')
-    return dict(url=canonical_url, source=source, title=title, company=company, description=description, location=location)
+    posted_label = first_text(['[data-automation="jobListingDate"]', '.posted-time-ago__text', '.jobs-unified-top-card__posted-date'])
+    return dict(url=canonical_url, source=source, title=title, company=company, description=description, location=location, posted_label=posted_label)
 
 
 def challenged(page):
     return bool(re.search(r'/login|/checkpoint|/authwall|/sign-in|/signup|/sign-up', page.url)
                 or re.search(r'just a moment|security check|verify.*human|access denied|^(sign in|sign up|join).*linkedin', page.title(), re.I)
+                or page.get_by_text(re.compile(r'confirm you are human|verify you are human|help us keep SEEK secure', re.I)).count()
                 or page.locator('input[type="password"]:visible, iframe[src*="captcha"]:visible').count())
+
+
+def wait_for_job(page):
+    """Allow client-rendered descriptions or verification screens to finish loading."""
+    from playwright.sync_api import TimeoutError as PlaywrightTimeout
+    try:
+        page.wait_for_function('''() => {
+            const body = document.body?.innerText || '';
+            return /confirm you are human|verify you are human|help us keep SEEK secure/i.test(body)
+                || /just a moment|security check|access denied/i.test(document.title)
+                || [...document.querySelectorAll('[data-automation="jobAdDetails"], #job-details, .show-more-less-html__markup, [data-testid="expandable-text-box"]')].some(n => n.innerText?.trim().length >= 100)
+                || [...document.querySelectorAll('script[type="application/ld+json"]')].some(n => n.textContent.includes('JobPosting'));
+        }''', timeout=8000)
+    except PlaywrightTimeout:
+        pass  # Extraction supplies the final, specific error.
 
 
 def wait_for_access(agent, page, target=None):
@@ -154,17 +181,41 @@ def discover_site(agent, profile, config, seen):
                 agent.progress(f'Searching {source}: {role}, {profile["search_location"]} (page {index + 1}).')
                 search = agent.context.new_page()
                 try:
-                    target = search_url(source, role, profile['search_location'], index)
+                    target = search_url(source, role, profile['search_location'], index, config.get('posted_days', 0), config.get('sort_order', 'relevance'))
                     search.goto(target, wait_until='domcontentloaded', timeout=45000)
                     if challenged(search):
-                        issue(f'{source}: sign-in or verification required. Use Connect {source} in My profile, then retry search. Continuing with the other site.')
-                        return
+                        if agent.headless is False:
+                            wait_for_access(agent, search, target)
+                        else:
+                            issue(f'{source}: verification or sign-in required in the search browser. Your saved login may still be valid. Choose Visible Chrome in Search options to continue on the site.')
+                            return
                     search.wait_for_timeout(2000)
                     # Scroll only loaded results. Never repeatedly hammer blocked pages.
                     for _ in range(2):
                         search.mouse.wheel(0, 800)
                         search.wait_for_timeout(500)
+                    if challenged(search):
+                        if agent.headless is False:
+                            wait_for_access(agent, search, target)
+                        else:
+                            issue(f'{source}: verification or sign-in required in the search browser. Choose Visible Chrome in Search options to continue on the site.')
+                            return
                     links = search.locator('a[href*="/jobs/view/"]' if source == 'LinkedIn' else 'a[href*="/job/"]').evaluate_all('(nodes) => nodes.map(n => n.href)')
+                    listing_dates = {}
+                    if source == 'SEEK':
+                        cards = search.locator('article').evaluate_all('''nodes => nodes.map(n => ({
+                            url: n.querySelector('a[data-automation="jobTitle"]')?.href,
+                            posted: n.querySelector('[data-automation="jobListingDate"]')?.innerText
+                        }))''')
+                        for card in cards:
+                            if not isinstance(card, dict) or not card.get('url') or not card.get('posted'):
+                                continue
+                            try:
+                                card_url, card_source = validate_url(card['url'])
+                                if card_source == source:
+                                    listing_dates[card_url] = card['posted'].strip().splitlines()[0]
+                            except ValueError:
+                                continue
                     candidates = []
                     for link in links:
                         try:
@@ -187,15 +238,26 @@ def discover_site(agent, profile, config, seen):
                         detail = agent.context.new_page()
                         try:
                             detail.goto(url, wait_until='domcontentloaded', timeout=45000)
+                            wait_for_job(detail)
                             if challenged(detail):
-                                raise ValueError(f'{source} requires sign-in or verification. Use Connect {source} in My profile, then retry.')
-                            detail.wait_for_timeout(1500)
-                            yield extract_job(detail, source, url)
+                                if agent.headless is False:
+                                    wait_for_access(agent, detail, url)
+                                    wait_for_job(detail)
+                                else:
+                                    issue(f'{source}: verification or sign-in required in the search browser. Choose Visible Chrome in Search options to continue on the site.')
+                                    return
+                            job = extract_job(detail, source, url)
+                            if not job.get('date_posted') and not job.get('posted_label') and url in listing_dates:
+                                job['posted_label'] = listing_dates[url]
+                            yield job
                         except Exception as exc:
                             issue(f'Could not read {url}: {str(exc)[:180]}')
                         finally:
                             detail.close()
                 except Exception as exc:
+                    if 'ERR_NETWORK_ACCESS_DENIED' in str(exc):
+                        issue(f'{source}: Chrome cannot access the internet. Restart Jobflow outside the restricted environment or allow its browser through your network security settings, then retry.')
+                        return
                     issue(f'{source} search stopped: {str(exc)[:180]}')
                     break
                 finally:

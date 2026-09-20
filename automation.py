@@ -7,7 +7,11 @@ from datetime import datetime, timezone
 
 
 def validate_config(profile, body):
-    for key in ('name', 'email', 'experience', 'skills', 'roles'):
+    keywords = body.get('keywords', '')
+    if not isinstance(keywords, str) or len(keywords) > 300:
+        raise ValueError('Enter job keywords using at most 300 characters.')
+    keywords = keywords.strip()
+    for key in ('name', 'email', 'experience', 'skills'):
         if not profile.get(key, '').strip():
             raise ValueError(f'Complete {key.replace("_", " ")} in My profile before starting discovery.')
     if not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+', profile['email']):
@@ -15,7 +19,15 @@ def validate_config(profile, body):
     sources = body.get('sources', ['LinkedIn', 'SEEK'])
     if not isinstance(sources, list) or not sources or any(s not in ('LinkedIn', 'SEEK') for s in sources):
         raise ValueError('Select LinkedIn, SEEK, or both.')
-    config = {'sources': list(dict.fromkeys(sources)), 'submit': body.get('submit') is True}
+    config = {'sources': list(dict.fromkeys(sources)), 'submit': body.get('submit') is True, 'keywords': keywords}
+    posted_days = body.get('posted_days', 0)
+    if type(posted_days) is not int or posted_days not in (0, 1, 3, 7, 14):
+        raise ValueError('Choose any time, 24 hours, 3 days, 7 days or 14 days for posting date.')
+    sort_order = body.get('sort_order', 'relevance')
+    browser_mode = body.get('browser_mode', 'auto')
+    if sort_order not in ('relevance', 'newest') or browser_mode not in ('auto', 'visible', 'background'):
+        raise ValueError('Choose a supported sort order and browser mode.')
+    config.update(posted_days=posted_days, sort_order=sort_order, browser_mode=browser_mode)
     config['location'] = profile_location(profile)
     if not config['location']:
         raise ValueError('Complete Location in My profile before searching.')
@@ -24,9 +36,9 @@ def validate_config(profile, body):
         if type(value) is not int or not 1 <= value <= maximum:
             raise ValueError(f'{key.replace("_", " ")} must be between 1 and {maximum}.')
         config[key] = value
-    config['roles'] = [r.strip() for r in re.split(r'[,\n]', profile['roles']) if r.strip()][:5]
+    config['roles'] = [r.strip() for r in re.split(r'[,\n]', keywords or profile.get('roles', '')) if r.strip()][:5]
     if not config['roles']:
-        raise ValueError('Enter at least one target role.')
+        raise ValueError('Enter job keywords or save at least one target role in My profile.')
     if config['submit'] and not profile.get('work_rights', '').strip():
         raise ValueError('Enter your work rights in My profile before automatic submission.')
     return config
@@ -83,6 +95,14 @@ def run(profile, config):
                                   'reason': f'Job location ({job.get("location") or "not stated"}) does not confirm a match with your profile location ({profile["search_location"]}).',
                                   'engine': 'location check'}
                 job['assessment'] = assessment
+                if assessment.get('role_match_unverified') and assessment['location_match']:
+                    if new:
+                        record['found'] += 1
+                    job.update(status='needs_input', note='Qwen suggested a possible role match but could not quote valid evidence. Review the job description before preparing documents.')
+                    app.save_job(job)
+                    record['skipped'] += 1
+                    event(f'{job["title"]}: saved for review because role-match evidence could not be verified.')
+                    return
                 if not assessment['role_match'] or not assessment['location_match']:
                     record['skipped'] += 1
                     if not new:
@@ -127,6 +147,13 @@ def run(profile, config):
         finally:
             write(record)
     try:
+        if config.get('keywords') and not app.STOP.is_set():
+            from local_ai import search_plan
+            event('Qwen is turning your keywords into focused job searches.', 'planning_search')
+            config['roles'] = search_plan(config['keywords'])
+            # Run-specific intent must also control matching, without editing the saved profile.
+            profile = {**profile, 'roles': ', '.join(config['roles'])}
+            event('Search plan: ' + '; '.join(config['roles']) + '. Location: ' + config['location'] + '.', 'planning_search')
         event('Starting background search: ' + ', '.join(config['sources']) + '. You can keep using the dashboard.', 'searching')
         from tailoring import VERSION
         from review import approved
@@ -135,6 +162,9 @@ def run(profile, config):
                     and not j.get('submission_requested') and not j.get('submission_in_progress')
                     and (not (j.get('resume') and j.get('cover_letter')) or (j.get('resume') or {}).get('tailoring_version', 0) < VERSION)]
         existing = [job for job in existing if job.get('source') in config['sources']]
+        if config.get('posted_days'):
+            existing = []
+            event(f'Searching listings posted in the last {config["posted_days"]} day(s). Saved jobs remain in Applications; this filtered run searches new listings only.')
         for job in existing[:config['max_jobs']]:
             if app.STOP.is_set():
                 break
@@ -147,21 +177,31 @@ def run(profile, config):
             record['revisited'] += 1
             process(job)
         if not app.STOP.is_set():
-            with BrowserAgent(browser_data(profile), app.STOP, headless=True) as agent:
-                agent.progress = event
-                agent.source_issues = []
-                seen = {job['url'] for job in app.jobs()}
-                stream = discover(agent, profile, config, seen)
-                try:
-                    for found in stream:
-                        if app.STOP.is_set():
-                            break
-                        job = {**found, 'id': uuid.uuid4().hex, 'profile_id': profile.get('id', 'default'), 'status': 'saved', 'resume': None, 'note': 'Found by combined search.'}
-                        process(job, new=True)
-                finally:
-                    if hasattr(stream, 'close'):
-                        stream.close()
-                    record['source_issues'] = agent.source_issues
+            mode = config.get('browser_mode', 'auto')
+            headless = mode == 'background' or (mode == 'auto' and 'SEEK' not in config['sources'])
+            event('Using the saved site session in ' + ('a background browser.' if headless else 'a visible Chrome window. Complete site verification there if requested.'))
+            try:
+                with BrowserAgent(browser_data(profile), app.STOP, headless=headless) as agent:
+                    agent.progress = event
+                    agent.source_issues = []
+                    seen = {job['url'] for job in app.jobs()}
+                    stream = discover(agent, profile, config, seen)
+                    try:
+                        for found in stream:
+                            if app.STOP.is_set():
+                                break
+                            job = {**found, 'id': uuid.uuid4().hex, 'profile_id': profile.get('id', 'default'), 'status': 'saved', 'resume': None, 'note': 'Found by combined search.'}
+                            process(job, new=True)
+                    finally:
+                        if hasattr(stream, 'close'):
+                            stream.close()
+                        record['source_issues'] = agent.source_issues
+            except Exception as exc:
+                # Collected jobs can still be drafted locally if discovery loses
+                # its browser. Stop continues to prevent any further model work.
+                message = 'Job search interrupted: ' + str(exc)[:250]
+                record['source_issues'].append(message)
+                event(message)
         if pending_drafts and not app.STOP.is_set():
             event(f'Search finished. Automatically creating resumes and cover letters for {len(pending_drafts)} jobs.', 'preparing_documents')
             for job in pending_drafts:

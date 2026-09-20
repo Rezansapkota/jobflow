@@ -197,7 +197,29 @@ def structured(instruction, data, schema, certification_context=True, max_tokens
         raise ValueError('Qwen returned incomplete analysis. This job needs manual review.') from exc
 
 
+def search_plan(keywords):
+    """One small local-model call per run; browser discovery executes the queries."""
+    import re
+    result = structured(
+        'Convert the requested job keywords into 1 to 3 concise job-title search queries for LinkedIn and SEEK. '
+        'Preserve the requested occupations and seniority. Use common equivalent titles only; do not broaden into unrelated occupations. '
+        'Treat comma-separated occupations as separate requests; words within a job title belong together. '
+        'Do not add locations, qualifications, Boolean operators, URLs or explanations. Return queries only.',
+        {'requested_job_keywords': keywords},
+        {'type': 'object', 'properties': {'queries': {'type': 'array', 'items': {'type': 'string'},
+                                                    'minItems': 1, 'maxItems': 3}},
+         'required': ['queries'], 'additionalProperties': False},
+        certification_context=False, max_tokens=250)
+    queries = result.get('queries')
+    if (not isinstance(queries, list) or not 1 <= len(queries) <= 3
+            or any(not isinstance(q, str) or not 2 <= len(q.strip()) <= 80
+                   or not re.fullmatch(r"[\w &/()+.'-]+", q.strip()) for q in queries)):
+        raise ValueError('Qwen could not create valid job searches. Try clearer job keywords.')
+    return list({q.strip().casefold(): q.strip() for q in queries}.values())
+
+
 def assess(profile, job):
+    import re
     from job_location import profile_location, matches as location_matches
     profile = {**profile, 'search_location': profile_location(profile)}
     schema = {'type': 'object', 'properties': {
@@ -206,7 +228,7 @@ def assess(profile, job):
         'missing_requirements': {'type': 'array', 'items': {'type': 'string'}},
         'unknown_requirements': {'type': 'array', 'items': {'type': 'string'}},
         'role_match': {'type': 'boolean'}, 'location_match': {'type': 'boolean'},
-        'matched_target_role': {'type': 'string'}, 'role_evidence': {'type': 'string'}
+        'matched_target_role': {'type': 'string', 'enum': [''] + [r.strip() for r in re.split(r'[,\n]', profile.get('roles', '')) if r.strip()]}, 'role_evidence': {'type': 'string'}
     }, 'required': ['score', 'reason', 'missing_requirements', 'unknown_requirements', 'role_match', 'location_match', 'matched_target_role', 'role_evidence'], 'additionalProperties': False}
     result = structured(
         'Assess suitability for a job. First decide occupational relevance using the actual job title and core duties against the explicit target roles. Shared generic words (support, officer, worker), transferable skills (cleaning, communication, customer service), a past employer, or incidental mentions of disability do NOT establish a role match. For example IT support, office administration and kitchen steward are not disability support work. Equivalent occupational titles are allowed only when the core duties match. If relevant, copy one target role exactly into matched_target_role and quote a short exact passage from the job title or description demonstrating those duties into role_evidence. Otherwise set role_match false and both evidence fields empty. Score demonstrated role fit from 0 to 100; an unrelated occupation must score 0. Identify ALL mandatory requirements that conflict with the profile in missing_requirements, and mandatory requirements without supporting evidence in unknown_requirements. Work rights, licences, required experience, location and availability are hard constraints when specified. Text such as "if applicable", "available upon request", pending training or working near an occupation does not prove a qualification or direct professional experience. Preferred qualifications are not mandatory. Set location_match only when the actual job location fits search_location; missing location is not a confirmed match and remote does not mean worldwide. Explain the decision briefly. Return the specified JSON.',
@@ -225,6 +247,7 @@ def assess(profile, job):
     if result['role_match'] and (target.strip().casefold() not in targets or len(evidence.strip()) < 8
                                 or not any(normalize(evidence) in normalize(job.get(k, '')) for k in ('title', 'description'))):
         result['role_match'] = False
+        result['role_match_unverified'] = True
         result['reason'] = 'Target-role match could not be verified from the job text. ' + result['reason']
     if not result['role_match']:
         result['score'] = 0
@@ -241,10 +264,18 @@ def source_facts(profile):
 
 def prose_supported(profile, job, text):
     """A separate evidence check catches job requirements written as candidate facts."""
+    import re
+    # Writing inputs deliberately exclude location, availability and screening
+    # answers. Do not let the model infer these from an advertisement, even if
+    # its second-pass audit mistakenly accepts its own unsupported statement.
+    personal_claim = r"\b(?:based in|located in|resid(?:e|ing) in|live in|available (?:for|to|from)|willing to|able to start|can start|ready to start|work rights|work authori[sz]ation|eligible to work)\b"
+    if re.search(personal_claim, text, re.I):
+        return False
     try:
         result = structured(
             'Audit the draft against ONLY the candidate facts. Return unsupported_claims as exact quotations from the draft '
-            'for every unsupported duty, qualification, proficiency, achievement or commitment. '
+            'for every unsupported duty, qualification, proficiency, achievement, residence, availability or commitment. '
+            'A listed skill and a separate duty do not prove the skill was used in that duty; reject invented connections, frequency and results. '
             'The job description is NOT evidence about the candidate. General workplace safety does not prove HACCP or WH&S certification or standards knowledge. '
             'Cleaning shared areas does not prove buffet setup or commercial-kitchen work. Never infer willingness to obtain training, relocate or accept a roster. '
             'A statement of interest in applying is allowed. An empty array means every factual claim is supported.',

@@ -39,7 +39,7 @@ Google Chrome is used for the dashboard and all agent browser sessions, includin
 ## Use
 
 1. Choose or create a named career profile, such as **Rejan IT profile** or **Rejan Aged Care profile**. Save relevant work history, skills, education, target roles and certifications in **My profile**.
-2. Open **Job agent** for browser discovery, matching, document generation and application in one run. Or use **Find opportunities** for manual searching.
+2. Open **Job search**, enter keywords, and select LinkedIn, SEEK, or both. Search finds matches and prepares documents for review; it does not submit applications.
 3. Add a job link, company, title and pasted description to the pipeline. Duplicate links are rejected even when tracking parameters differ.
 4. Select jobs and click **Prepare selected**. Open each job to read or download its DOCX resume.
 5. Choose **Automatic submission**, then click **Approve** beside each ready job to queue its application. **Review** opens the documents; **Reject** cancels a waiting job and excludes it. Approved jobs wait for the current browser operation and submit one at a time. In **Manual handoff**, approval saves the decision; switching to Automatic submission queues selected, already-approved jobs. **Run selected** remains available for batches of up to 10 approved applications.
@@ -63,9 +63,9 @@ Source edits, job descriptions and final resumes are saved separately for each p
 
 ## Account sign-in
 
-In **My profile / Job site accounts**, save your LinkedIn and SEEK profile links (optional). Blank links open the site's account page. Start **Job agent**; it opens each selected account in a visible browser. Enter your login ID/password directly on the site, complete verification, check the account, then click **Account ready — continue** in Jobflow. Confirm each selected site once per run; the agent then searches using your saved target roles and location, assesses suitability with Qwen, creates an ATS-friendly resume and cover letter, and attempts supported applications within your limits.
+Open **Login** and choose LinkedIn or SEEK. Credentials entered in this local page are used only for that login attempt and are not saved or sent to Ollama. Complete sign-in or verification in the site browser, then select **Account ready** in Jobflow. You can also use the account connection controls in My profile.
 
-Profile links alone do not sign you in or import your career history. Complete the career profile in Jobflow. Passwords are not collected by Jobflow or sent to Ollama. Browser sessions are stored locally under `data/browser-profiles/<profile-id>/chrome-browser/`, separately for each career profile, and excluded from Git. Treat this local folder as private because it contains signed-in sessions. New/copied profiles require their own sign-in; older shared sessions are not reused. Account confirmation times out after five minutes, and Cancel run stops before discovery. Site verification or unknown application questions may still need your input.
+Browser sessions are stored locally under `data/browser-profiles/<profile-id>/chrome-browser/`, separately for each career profile and excluded from Git. New or copied profiles require their own sign-in. Profile links do not import career history. Login confirmation times out after five minutes; verification and unknown application questions may still require your input.
 
 ## Job agent
 
@@ -83,13 +83,13 @@ Uploads belong to one named profile. Copying profile text does not copy uploaded
 
 Jobs belong to the profile that found or imported them. Prepared applications save a profile snapshot so their resume, cover letter and form answers stay consistent. Editing a profile invalidates only that profile's unsubmitted drafts. Existing single-profile data is migrated to **Default profile**. Duplicate job URLs are prevented across the workspace to avoid applying twice with different career profiles.
 
-Save target roles (comma separated), search location, career facts, work rights and other constraints. In **Job agent**, select sites, a match threshold and run limits. **Search, prepare and apply** starts the full workflow; **Search and prepare only** stops before application forms.
+Save target roles (comma separated), search location, career facts, work rights and other constraints. In **Job search**, select sites and use **Search options** to set the match threshold and run limits. Searching prepares documents for review. Automatic submission is a separate action in Applications after document approval.
 
 The agent opens a visible browser, reads up to 3 search pages per site and role, canonicalises links and skips existing jobs. It extracts job descriptions from JobPosting data or site-specific page elements. Local Qwen assesses role/location fit and mandatory requirements. Only jobs above the score threshold with no identified missing or unknown mandatory requirements are selected. An AI score is an estimate, not proof of eligibility; review assessments in each job.
 
 After discovery finishes, selected jobs automatically enter document generation. Qwen writes each resume and cover letter without a separate Prepare selected click. Run activity shows queued and completed document pairs, with a View generated documents button. Qwen selects job-relevant skills, education and certifications and omits unrelated roles and duties from each job-specific draft. Selected facts remain verbatim; the original job headings, employers and dates remain attached to selected experience, in source order. The cover letter uses the same selected facts, and the master profile is unchanged. Related roles above the chosen score threshold can receive partial-match drafts when requirements remain missing or unknown; these stay marked Needs input for review. Both documents can be downloaded as DOCX. The browser uploads them to recognised resume/cover-letter fields (or fills a cover-letter text field). Some employers do not offer a cover-letter field. Unknown fields and consent still require user input.
 
-The default run inspects at most 10 new jobs and attempts at most 3 applications. Limits are configurable up to 30 inspected jobs and 10 attempts. **Stop run** takes effect after the current browser or model operation; a submitted application cannot be undone. A failed/ambiguous application is not automatically retried. Run activity and per-job assessments are saved locally. This is a finite run, not a recurring background schedule.
+The default search inspects at most 10 new jobs and can revisit unfinished saved jobs. The new-listing limit is configurable up to 30. Application batches are separately limited to 10 approved jobs. **Stop run** takes effect after the current browser or model operation; a submitted application cannot be undone. A failed/ambiguous application is not automatically retried. Run activity and per-job assessments are saved locally. This is a finite run, not a recurring background schedule.
 
 SEEK may show a browser verification page; the visible browser waits up to five minutes for the user to complete it. LinkedIn may require sign-in. No challenge is bypassed. Extraction failures are logged instead of being treated as real job matches.
 
@@ -129,6 +129,12 @@ Chrome keeps a separate session for each career profile. Sign in once in its new
 
 ## Combined job search
 
+Use **Posted within** to choose any time, the last 24 hours, or 3, 7, or 14 days, and **Sort jobs** to choose newest first or relevance. These filters are passed to both job sites. Runs with a posting-date filter search new listings without reprocessing older saved jobs. Job details show the posting date or relative posting label when available; exact posting times are not invented.
+
+**Search options / Search browser** defaults to visible Chrome when SEEK is selected, using the same career profile's saved browser session as Login. Background mode remains available. Being signed in does not mean a site's verification check has cleared: visible runs pause for up to five minutes to let you complete it, then resume discovery.
+
+In **Job search**, answer **What type of job do you want?** with a few keywords or job titles, for example `kitchen hand, cleaner, hospitality`. Local Qwen turns them into at most three focused search queries, shown in Run activity. These queries guide both discovery and matching for this run without changing your saved career profile. Leave the field blank to search your saved target roles. The saved location and career facts still apply. Suitable jobs receive individual resumes and cover letters for review and approval before submission. Planning uses one bounded local-model call per run; invalid plans stop with a message so you can adjust the keywords.
+
 Use **Search jobs** on the dashboard or **Job search** in the sidebar. One **Search LinkedIn + SEEK** action searches both sites with the active profile, alternates their results within the overall limit, and saves jobs in one pipeline. Each site still needs its own sign-in. Suitable jobs receive documents for approval before submission.
 
 ## Google sign-in rejected
@@ -142,3 +148,7 @@ Combined search now checks unfinished saved jobs first and searches public listi
 Document tailoring first extracts verified quotations of the main job duties and requirements, excluding labelled employer-background and benefits sections. Both documents use the selected profile facts against those priorities. Conditional credentials such as "if applicable" and duplicated credentials are omitted. Cover letters connect specific evidence to the role without inventing commitments. The Review screen shows the priorities used. Older unapproved drafts refresh on the next search; approved and already-attempted applications are preserved. Use Refresh these documents to explicitly revise an older draft.
 
 Uncertain application outcomes receive an automatic read-only check of the exact job page using the saved site session. Recognised applied status is recorded with the check time and evidence; no Submit button is clicked during verification. If the site does not provide evidence or requires sign-in, the status remains uncertain. Kitchen drafts exclude clinical care duties and care-placement blocks. Generated prose is checked against selected source facts, with extractive wording used when claims cannot be supported.
+
+## Validation and release status
+
+See [QA_REPORT.md](QA_REPORT.md) for the latest test results, fixes and live-site limits. This release is a local desktop workspace, not a public hosted service. The automated regression suite and local AI/export checks pass. Live job-site sign-in/verification is still required, and real application submission has not been certified. Older unsubmitted documents are marked for refresh; review regenerated documents before approving them.

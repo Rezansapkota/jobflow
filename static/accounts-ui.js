@@ -15,40 +15,12 @@ $('#account-continue').onclick = async () => {
 };
 $('#account-stop').onclick = async () => { try { await api('/api/stop', {}); } catch (err) { toast(err.message); } };
 const beforeAccountsRender = render;
-const documentSummary = document.createElement('p');
-documentSummary.className = 'mode-note';
-$('#ai-status').after(documentSummary);
-const prepareMissing = document.createElement('button');
-prepareMissing.type = 'button';
-prepareMissing.textContent = 'Build missing resumes + cover letters';
-$('#prepare').after(prepareMissing);
-prepareMissing.onclick = async () => {
-    try {
-        await saveProfileChanges();
-        await refresh();
-        const ids = state.jobs.filter(j => ['saved', 'needs_input', 'ready'].includes(j.status) && (!j.resume || !j.cover_letter)).slice(0, 10).map(j => j.id);
-        if (!ids.length) throw Error('All eligible jobs already have both documents.');
-        await api('/api/prepare', {ids, engine: 'ollama'});
-        await refresh();
-        toast(`Qwen is creating documents for ${ids.length} saved jobs. This does not submit applications.`);
-    } catch (err) { toast(err.message); }
-};
 render = function() {
     beforeAccountsRender();
-    const pairs = state.jobs.filter(j => j.resume && j.cover_letter).length;
-    documentSummary.textContent = `${pairs} of ${state.jobs.length} pipeline jobs have a resume and cover letter.${state.preparing ? ' Qwen is writing documents now.' : ' Open a job to preview or download its documents.'} The Job agent activity counts refer only to its last search run.`;
-    prepareMissing.disabled = Boolean(state.running || state.preparing);
     const pending = state.account_pending;
     accountBanner.hidden = !pending;
-    if (pending) $('#account-instructions').textContent = `In the agent browser, sign in to ${pending.source} and check that it is the account you want to use for ${state.profile.title}. Then continue here. Search and applications start after both selected accounts are confirmed.`;
+    if (pending) $('#account-instructions').textContent = `In the Chrome window, finish sign-in or verification for ${pending.source}. Then click Account ready below to save that browser session. After connecting your sites, start your search again.`;
 };
-const startWithSavedProfile = $('#agent-form').onsubmit;
-$('#agent-form').onsubmit = async e => {
-    e.preventDefault();
-    try { await saveProfileChanges(); await startWithSavedProfile(e); }
-    catch (err) { toast(err.message); }
-};
-
 const beforeReviewDetail = detail;
 detail = function(id) {
     beforeReviewDetail(id);
@@ -74,28 +46,25 @@ detail = function(id) {
     }
     $('#detail-content').appendChild(panel);
 };
-const runMode = $('#agent-form select[name=submit]');
-runMode.innerHTML = '<option value="false">Search and prepare for my review</option>';
-const reviewNotice = document.createElement('p');
-reviewNotice.textContent = 'Use Review to read each resume and cover letter. Select Automatic submission in the pipeline, then Approve beside a job to apply automatically. Reject excludes a job from submission.';
-$('#agent-form').prepend(reviewNotice);
-
-const connectionControls = document.createElement('div');
-connectionControls.innerHTML = '<div class="detail-actions"><button type="button" data-connect="LinkedIn">Connect LinkedIn</button><button type="button" data-connect="SEEK">Connect SEEK</button></div><p id="connection-note" role="status"></p>';
-accountFields.appendChild(connectionControls);
-connectionControls.onclick = async e => {
-    const source = e.target.dataset.connect;
-    if (!source) return;
-    try {
-        await saveProfileChanges();
-        await api('/api/accounts/connect', {source});
-        await refresh();
-        toast(`Sign in to ${source} in Chrome, then confirm the account in Jobflow.`);
-    } catch (err) { toast(err.message); }
-};
+const connectionControls = $('#login');
+connectionControls.querySelectorAll('.site-login').forEach(form => {
+    form.onsubmit = async e => {
+        e.preventDefault();
+        const button = form.querySelector('button');
+        button.disabled = true;
+        let credentials = Object.fromEntries(new FormData(form));
+        form.elements.password.value = '';
+        try {
+            await api('/api/accounts/connect', {source: form.dataset.source, ...credentials});
+            toast('Opening the site and signing in. Complete any verification in Chrome.');
+            await refresh();
+        } catch (err) { toast(err.message); }
+        finally { credentials = null; button.disabled = Boolean(state.running || state.preparing); }
+    };
+});
 const beforeConnectionRender = render;
 render = function() {
     beforeConnectionRender();
-    $('#connection-note').textContent = state.connection_note || 'Connect a site when search reports that sign-in or verification is required.';
-    connectionControls.querySelectorAll('button').forEach(b => b.disabled = Boolean(state.running || state.preparing));
+    $('#connection-note').textContent = state.connection_note || 'Choose a site to sign in. Sessions are saved separately for each career profile.';
+    connectionControls.querySelectorAll('[data-connect]').forEach(b => b.disabled = Boolean(state.running || state.preparing));
 };

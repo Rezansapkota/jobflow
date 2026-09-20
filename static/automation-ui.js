@@ -1,33 +1,19 @@
-// The same workflow works for any profile; no applicant details are built in.
-const automationNav = document.createElement('button');
-automationNav.dataset.view = 'automation';
-automationNav.innerHTML = '↗ <span>Job agent</span>';
-document.querySelector('nav').appendChild(automationNav);
-automationNav.onclick = () => { view('automation'); $('#breadcrumb').textContent = 'Job agent'; };
-const agentSection = document.createElement('section');
-agentSection.id = 'automation'; agentSection.className = 'view'; agentSection.hidden = true;
-agentSection.innerHTML = `<div class="eyebrow">FROM SEARCH TO APPLICATION</div>
-<h1>One search. More possibilities.</h1>
-<p class="muted">Search in the background, match against your profile, and prepare a resume and cover letter with local Qwen. You can keep using the dashboard while it runs.</p>
-<form id="agent-form" class="panel">
-<p id="agent-criteria" class="muted"></p>
-<p>Target roles and location come from <button id="agent-profile" type="button" class="text-button">My profile ↗</button>. Separate multiple roles with commas.</p>
-<div class="grid"><label>Job sites<select name="source"><option value="both">LinkedIn + SEEK</option><option value="LinkedIn">LinkedIn only</option><option value="SEEK">SEEK only</option></select></label>
-<label>Run mode<select name="submit"><option value="false">Automatically create resume + cover letter</option></select></label></div>
-<div class="grid"><label>Maximum jobs to inspect<input name="max_jobs" type="number" min="1" max="30" value="10" required></label>
-<label>Maximum application attempts<input name="max_applications" type="number" min="1" max="10" value="3" required></label>
-<label>Minimum Qwen match score<input name="min_score" type="number" min="1" max="100" value="80" required></label>
-<label>Search pages per site and role<input name="pages" type="number" min="1" max="3" value="1" required></label></div>
-<p class="muted">A score is an AI estimate. Mandatory requirements, target role and location must also match. Unknown eligibility needs your input. If a site needs sign-in or verification, connect it in My profile and retry. Other selected sites continue searching.</p>
-<button type="submit" class="primary" id="agent-start">Search LinkedIn + SEEK ↗</button>
-<button type="button" id="agent-stop">Stop run</button>
-</form><div class="panel"><h2>Run activity</h2><p id="agent-summary">No run started.</p><button type="button" id="agent-results" hidden>View generated documents</button><ol id="agent-events" class="agent-events"></ol></div>`;
-$('footer').before(agentSection);
 $('#agent-profile').onclick = () => view('profile');
 $('#agent-results').onclick = () => view('board');
+const searchConnections = document.createElement('div');
+searchConnections.className = 'detail-actions';
+searchConnections.hidden = true;
+searchConnections.innerHTML = '<button type="button" data-search-connect="LinkedIn">Connect LinkedIn</button><button type="button" data-search-connect="SEEK">Connect SEEK</button>';
+$('#agent-error').after(searchConnections);
+searchConnections.onclick = async e => {
+    const source = e.target.dataset.searchConnect;
+    if (!source) return;
+    view('login');
+    document.querySelector(`#login form[data-source="${source}"] input[name=username]`).focus();
+};
 const sourceSelect = $('#agent-form select[name=source]');
 function updateSearchLabel() {
-    $('#agent-start').textContent = 'Search ' + (sourceSelect.value === 'both' ? 'LinkedIn + SEEK' : sourceSelect.value) + ' + create documents';
+    $('#agent-start').textContent = 'Search ' + (sourceSelect.value === 'both' ? 'LinkedIn + SEEK' : sourceSelect.value);
 }
 sourceSelect.onchange = updateSearchLabel;
 updateSearchLabel();
@@ -40,7 +26,11 @@ $('#agent-form').onsubmit = async e => {
     e.preventDefault();
     const values = Object.fromEntries(new FormData(e.target));
     const config = {sources: values.source === 'both' ? ['LinkedIn', 'SEEK'] : [values.source], submit: false};
-    for (const key of ['max_jobs', 'max_applications', 'min_score', 'pages']) config[key] = Number(values[key]);
+    config.keywords = values.keywords.trim();
+    config.posted_days = Number(values.posted_days);
+    config.sort_order = values.sort_order;
+    config.browser_mode = values.browser_mode;
+    for (const key of ['max_jobs', 'min_score', 'pages']) config[key] = Number(values[key]);
     $('#agent-start').disabled = true;
     try {
         await saveProfileChanges();
@@ -60,10 +50,30 @@ async function refreshAgent() {
     const response = await fetch('/api/automation');
     if (!response.ok) return;
     const run = await response.json();
-    $('#agent-results').hidden = !(run.prepared > 0);
+    const issues = run.source_issues || [];
+    const blockedSources = ['LinkedIn', 'SEEK'].filter(source => issues.some(issue => issue.includes(source) && /sign-in|verification/i.test(issue)));
+    searchConnections.hidden = !blockedSources.length;
+    searchConnections.querySelectorAll('button').forEach(button => {
+        button.hidden = !blockedSources.includes(button.dataset.searchConnect);
+        button.disabled = Boolean(state.running || state.preparing);
+    });
+    const networkDenied = issues.some(issue => issue.includes('ERR_NETWORK_ACCESS_DENIED') || issue.includes('Chrome cannot access the internet'));
+    const sourceSummaries = ['LinkedIn', 'SEEK'].flatMap(source => {
+        const related = issues.filter(issue => issue.includes(source) || issue.toLowerCase().includes(source === 'SEEK' ? 'seek.com' : 'linkedin.com'));
+        if (!related.length) return [];
+        if (related.some(issue => /Visible Chrome|saved login/i.test(issue))) return [`${source} requires browser verification. Your saved login may still be valid. Choose Visible Chrome in Search options and retry.`];
+        if (related.some(issue => /sign-in|verification/i.test(issue))) return [`${source} needs sign-in or verification. Open Login to sign in, then retry.`];
+        return [`${source}: some listings could not be read. See Activity details.`];
+    });
+    const errorMessage = networkDenied ? 'Search was blocked: Chrome could not access the internet. Restart Jobflow with network access, then try again.' : sourceSummaries.join(' ');
+    $('#agent-error').textContent = errorMessage || (run.status === 'needs_input' ? run.events?.at(-1)?.message || 'Open activity details to check what needs your attention.' : '');
+    $('#agent-error').hidden = !$('#agent-error').textContent;
+    $('#agent-results').hidden = !(run.prepared > 0 || run.found > 0 || run.revisited > 0);
+    $('#agent-results').textContent = run.prepared > 0 ? 'Review jobs and documents' : 'Review saved jobs';
+    $('#agent-stop').hidden = !state.running;
     $('#agent-start').disabled = Boolean(state.running || state.preparing);
     $('#agent-stop').disabled = !state.running;
-    $('#agent-summary').textContent = run.status === 'idle' ? 'No run started.' : `${run.status} / ${run.stage || run.status} · ${run.found || 0} relevant new jobs · ${run.skipped || 0} excluded or unsuitable · ${run.revisited || 0} saved jobs checked / ${run.prepared || 0} / ${run.queued || run.prepared || 0} resume and cover-letter pairs created · ${run.attempted || 0} attempted · ${run.submitted || 0} confirmed submitted`;
+    $('#agent-summary').textContent = run.status === 'idle' ? 'Your search activity will appear here.' : `${run.status.replaceAll('_', ' ')} / ${run.found || 0} jobs saved / ${run.skipped || 0} excluded or needing review / ${run.prepared || 0} document pairs ready`;
     $('#agent-events').innerHTML = (run.events || []).slice().reverse().map(event => `<li><small>${esc(new Date(event.time).toLocaleTimeString())}</small> ${esc(event.message)}</li>`).join('');
 }
 const resumeDetail = detail;
@@ -94,6 +104,12 @@ detail = function(id) {
         $('#detail-content').appendChild(refreshDraft);
     }
     const extra = document.createElement('div');
+    if (job.date_posted || job.posted_label) {
+        const posted = document.createElement('p');
+        posted.className = 'muted';
+        posted.textContent = 'Posted: ' + (job.date_posted || job.posted_label) + (job.date_posted ? ' (as reported by the site)' : ' (as shown when this job was collected)');
+        $('#detail-content').prepend(posted);
+    }
     const match = job.assessment;
     extra.innerHTML = (match ? `<h3>Suitability assessment · ${esc(match.score)}/100</h3><p>${esc(match.reason)}</p><p>Missing requirements: ${esc(match.missing_requirements.join('; ') || 'None identified')}</p><p>Needs clarification: ${esc(match.unknown_requirements.join('; ') || 'None identified')}</p>` : '') +
         (job.cover_letter ? `<h3>Cover letter</h3><a href="/api/cover-letter/${job.id}">Download cover letter (.docx)</a><pre>${esc(job.cover_letter)}</pre>` : '');
@@ -105,28 +121,4 @@ detail = function(id) {
 refreshAgent().catch(() => {});
 setInterval(() => refreshAgent().catch(() => {}), 4000);
 
-// One shared search screen for both job sites.
-automationNav.remove();
-const combinedSearchNav = document.querySelector('nav [data-view=search]');
-combinedSearchNav.querySelector('span').textContent = 'Job search';
-combinedSearchNav.dataset.view = 'automation';
-combinedSearchNav.onclick = () => { view('automation'); $('#breadcrumb').textContent = 'Combined job search'; };
-$('#agent-form input[name=max_applications]').closest('label').hidden = true;
-const combinedSearchNote = document.createElement('p');
-combinedSearchNote.className = 'muted';
-combinedSearchNote.textContent = 'One run checks unfinished saved jobs from your selected sites and searches for new listings in the background. Connect accounts in My profile if a site requests sign-in. After searching, qualifying matches automatically receive a tailored resume and cover letter. Open each job to review or download both documents.';
-$('#agent-form').before(combinedSearchNote);
-const dashboardSearch = document.createElement('button');
-dashboardSearch.className = 'primary';
-dashboardSearch.textContent = 'Search jobs';
-dashboardSearch.onclick = combinedSearchNav.onclick;
-const dashboardActions = document.createElement('div');
-dashboardActions.className = 'dashboard-actions';
-$('#add').before(dashboardActions);
-dashboardActions.append(dashboardSearch, $('#add'));
-
-const relevanceFilter = document.createElement('label');
-relevanceFilter.innerHTML = '<input id="relevant-only" type="checkbox" checked style="display:inline;width:auto;margin-right:8px"> Hide jobs assessed as outside the target role or location';
-$('#job-list').before(relevanceFilter);
 $('#relevant-only').onchange = () => { selected.clear(); render(); };
-render();

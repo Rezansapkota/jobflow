@@ -115,6 +115,33 @@ class ProfileTests(unittest.TestCase):
         app.init()
         self.assertEqual(app.profile()['title'], 'Renamed')
 
+    def test_document_downloads_require_the_active_profile(self):
+        app.save_job({'id': 'scoped', 'url': 'https://www.seek.com.au/job/87654321',
+                      'profile_id': 'default', 'status': 'ready',
+                      'resume': {'text': 'Original applicant'}, 'cover_letter': 'Original letter'})
+        self.post('/api/profiles/create', {'title': 'Other career'})
+        routes = ['/api/resume/scoped', '/api/resume/scoped?format=txt', '/api/cover-letter/scoped']
+        for route in routes:
+            with self.subTest(route=route):
+                with self.assertRaises(urllib.error.HTTPError) as error:
+                    urllib.request.urlopen(self.base + route).close()
+                self.assertEqual(error.exception.code, 404)
+                error.exception.close()
+        self.post('/api/profiles/select', {'id': 'default'})
+        for route in routes:
+            with urllib.request.urlopen(self.base + route) as response:
+                self.assertEqual(response.status, 200)
+
+    def test_automation_activity_belongs_to_selected_profile(self):
+        import automation
+        automation.write({'profile_id': 'default', 'status': 'complete', 'events': []})
+        self.post('/api/profiles/create', {'title': 'Other career'})
+        with urllib.request.urlopen(self.base + '/api/automation') as response:
+            self.assertEqual(json.load(response)['status'], 'idle')
+        self.post('/api/profiles/select', {'id': 'default'})
+        with urllib.request.urlopen(self.base + '/api/automation') as response:
+            self.assertEqual(json.load(response)['status'], 'complete')
+
     def test_certifications_reach_model_and_resume(self):
         p = {**app.profile(), 'certifications': 'First Aid | Expires 2027-06-01'}
         response = {'message': {'content': json.dumps({'priorities': ['First Aid required.'], 'summary': 'Profile summary.', 'skills': [], 'selection': {'headline': False, 'education': [], 'experience': [], 'certifications': [0]}})}}

@@ -1,7 +1,7 @@
 """Select saved facts without changing the master profile or employment attribution."""
 import re
 
-VERSION = 3
+VERSION = 4
 
 
 def confirmed_fact(text):

@@ -71,10 +71,62 @@ class AutomationTests(unittest.TestCase):
         prepare.assert_not_called()
         self.assertEqual(app.jobs()[0]['status'], 'ready')
 
-    def test_search_uses_background_browser(self):
+    def test_seek_search_uses_visible_saved_session_by_default(self):
         with patch('browser_agent.BrowserAgent', wraps=FakeBrowser) as browser:
             self.run_pipeline(False)
+        self.assertFalse(browser.call_args.kwargs['headless'])
+
+    def test_posting_filter_does_not_revisit_old_saved_jobs_and_keeps_background_choice(self):
+        app.save_job({**JOB, 'id': 'older-job', 'profile_id': 'default', 'status': 'saved', 'resume': None})
+        config = automation.validate_config(PROFILE, {'posted_days': 1, 'sort_order': 'newest', 'browser_mode': 'background'})
+        with patch('discovery.discover', return_value=iter([])) as discover, patch('browser_agent.BrowserAgent', wraps=FakeBrowser) as browser:
+            app.RUN_LOCK.acquire()
+            automation.run(PROFILE, config)
         self.assertTrue(browser.call_args.kwargs['headless'])
+        self.assertEqual(discover.call_args.args[2]['posted_days'], 1)
+        self.assertEqual(automation.current()['revisited'], 0)
+        self.assertEqual(app.get_job('older-job')['status'], 'saved')
+
+    def test_rejects_invalid_posting_and_browser_filters(self):
+        for body in ({'posted_days': True}, {'posted_days': -1}, {'posted_days': 300}, {'sort_order': 'invalid'}, {'browser_mode': 'invalid'}):
+            with self.assertRaises(ValueError):
+                automation.validate_config(PROFILE, body)
+
+    def test_unverified_role_evidence_is_saved_for_review_without_drafting(self):
+        assessment = {**MATCH, 'role_match': False, 'role_match_unverified': True, 'score': 0}
+        with patch('local_ai.assess', return_value=assessment), patch('local_ai.rewrite') as rewrite:
+            self.run_pipeline(False)
+        job = app.jobs()[0]
+        self.assertEqual(job['status'], 'needs_input')
+        self.assertTrue(job['assessment']['role_match_unverified'])
+        self.assertEqual(automation.current()['found'], 1)
+        rewrite.assert_not_called()
+
+    def test_keywords_control_search_matching_and_snapshot_without_changing_profile(self):
+        config = automation.validate_config(PROFILE, {'keywords': 'kitchen, cleaning'})
+        with patch('local_ai.search_plan', return_value=['Kitchen hand', 'Cleaner']) as plan, patch('local_ai.assess', return_value=MATCH.copy()) as assess, patch('discovery.discover', return_value=iter([JOB])) as discover:
+            app.RUN_LOCK.acquire()
+            automation.run(PROFILE, config)
+        plan.assert_called_once_with('kitchen, cleaning')
+        self.assertEqual(discover.call_args.args[2]['roles'], ['Kitchen hand', 'Cleaner'])
+        self.assertEqual(assess.call_args.args[0]['roles'], 'Kitchen hand, Cleaner')
+        self.assertEqual(app.jobs()[0]['profile_snapshot']['roles'], 'Kitchen hand, Cleaner')
+        self.assertEqual(PROFILE['roles'], 'Customer Service Officer')
+
+    def test_keywords_replace_missing_saved_roles_and_reject_invalid_input(self):
+        self.assertEqual(automation.validate_config({**PROFILE, 'roles': ''}, {'keywords': 'cleaner'})['roles'], ['cleaner'])
+        for keywords in ([], None, 123, 'x' * 301):
+            with self.assertRaises(ValueError):
+                automation.validate_config(PROFILE, {'keywords': keywords})
+
+    def test_failed_search_plan_releases_run_without_opening_browser(self):
+        config = automation.validate_config(PROFILE, {'keywords': 'cleaner'})
+        with patch('local_ai.search_plan', side_effect=ValueError('Invalid search plan')), patch('browser_agent.BrowserAgent') as browser:
+            app.RUN_LOCK.acquire()
+            automation.run(PROFILE, config)
+        browser.assert_not_called()
+        self.assertFalse(app.RUN_LOCK.locked())
+        self.assertEqual(automation.current()['status'], 'needs_input')
 
     def test_documents_are_created_automatically_after_search_finishes(self):
         finished = []
@@ -200,6 +252,19 @@ class AutomationTests(unittest.TestCase):
         assess.assert_not_called()
         self.assertEqual(app.jobs(), [])
         self.assertEqual(discover.call_args.args[1]['search_location'], 'Sydney NSW')
+
+    def test_search_browser_failure_still_prepares_collected_jobs(self):
+        def interrupted_search(*args):
+            yield JOB
+            raise RuntimeError('Browser closed unexpectedly')
+        with patch('discovery.discover', side_effect=interrupted_search):
+            self.run_pipeline(False)
+        self.assertEqual(app.jobs()[0]['status'], 'ready')
+        self.assertTrue(app.jobs()[0]['cover_letter'])
+        self.assertEqual(automation.current()['prepared'], 1)
+        self.assertEqual(automation.current()['status'], 'partial')
+        self.assertTrue(automation.current()['source_issues'])
+        self.assertEqual(FakeBrowser.attempts, [])
 
     def test_unrelated_new_listings_are_not_saved_or_prepared(self):
         for key in ('role_match', 'location_match'):

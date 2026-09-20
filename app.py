@@ -293,10 +293,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, status())
         if path == '/api/automation':
             from automation import current
-            return self.send(200, current())
+            run = current()
+            return self.send(200, run if run.get('profile_id', 'default') == profile()['id'] else {'status': 'idle', 'events': []})
         if path.startswith('/api/cover-letter/'):
             try:
                 job = get_job(path.rsplit('/', 1)[1])
+                require_profile(job, profile())
                 if not job.get('cover_letter'):
                     raise ValueError('Prepare a cover letter with Local Qwen AI first.')
                 return self.send(200, docx(job['cover_letter'], kind='cover_letter'), 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'cover-letter.docx')
@@ -305,6 +307,7 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith('/api/resume/'):
             try:
                 job = get_job(path.rsplit('/', 1)[1])
+                require_profile(job, profile())
                 if not job.get('resume'):
                     raise ValueError('Prepare this resume first.')
                 if parse_qs(urlparse(self.path).query).get('format') == ['txt']:
@@ -314,6 +317,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(404, {'error': str(exc)})
         files = {'/accounts-ui.js': ('accounts-ui.js', 'text/javascript'), '/': ('index.html', 'text/html; charset=utf-8'), '/style.css': ('style.css', 'text/css'), '/ui.js': ('ui.js', 'text/javascript'), '/automation-ui.js': ('automation-ui.js', 'text/javascript'), '/profiles-ui.js': ('profiles-ui.js', 'text/javascript'), '/certificates-ui.js': ('certificates-ui.js', 'text/javascript')}
         files.update({'/resume-builder': ('resume-builder.html', 'text/html; charset=utf-8'), '/resume-builder.js': ('resume-builder.js', 'text/javascript')})
+        files['/favicon.svg'] = ('favicon.svg', 'image/svg+xml')
         if path in files:
             name, mime = files[path]
             return self.send(200, (ROOT / 'static' / name).read_bytes(), mime)
@@ -467,14 +471,15 @@ class Handler(BaseHTTPRequestHandler):
                 job.update(status=body['status'], note='Status updated by you.')
                 save_job(job)
             elif path == '/api/accounts/connect':
-                from accounts import account_url, connect_worker
+                from accounts import account_url, connect_worker, login_credentials
                 p = profile()
                 source = body.get('source')
                 account_url(p, source)
+                credentials = login_credentials(body)
                 if not RUN_LOCK.acquire(blocking=False):
                     raise ValueError('A browser run is already active.')
                 STOP.clear()
-                threading.Thread(target=connect_worker, args=(p, source), daemon=True).start()
+                threading.Thread(target=connect_worker, args=(p, source, credentials), daemon=True).start()
             elif path == '/api/automation/start':
                 from automation import validate_config, run
                 p = application_profile()
