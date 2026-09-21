@@ -54,6 +54,28 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(len(app.jobs()), 1)
         self.assertEqual(app.get_job('abc')['status'], 'submitted')
 
+    def test_preparation_rechecks_saved_facts_and_keeps_unresolved_details_visible(self):
+        from test_automation import PROFILE, JOB, MATCH
+        p = {**PROFILE, 'id': 'default', 'answers': {'Police check': 'Not held'}}
+        for gaps, expected in [(['Current police check'], 'needs_input'), ([], 'ready')]:
+            with self.subTest(gaps=gaps):
+                job = {**JOB, 'id': 'recheck', 'profile_id': 'default', 'status': 'needs_input',
+                       'resume': None, 'assessment': {**MATCH, 'unknown_requirements': ['Current police check']}}
+                app.save_job(job)
+                with patch('local_ai.assess', return_value={**MATCH, 'unknown_requirements': gaps}) as assess, patch('local_ai.rewrite', return_value={'summary': 'Customer service experience.', 'skills': ['Customer service']}), patch('local_ai.cover_letter', return_value='Fictional cover letter.'):
+                    app.AI_LOCK.acquire()
+                    app.prepare_ai([job['id']], p)
+                self.assertFalse(app.AI_LOCK.locked())
+                result = app.get_job(job['id'])
+                self.assertEqual(result['status'], expected)
+                self.assertEqual(assess.call_args.args[0]['answers'], p['answers'])
+                self.assertTrue(result['resume'] and result['cover_letter'])
+                self.assertFalse(result.get('approved_documents'))
+                self.assertFalse(result.get('submission_requested'))
+                if gaps:
+                    self.assertEqual(result['input_kind'], 'profile_information')
+                    self.assertEqual(result['input_questions'], gaps)
+
 
 if __name__ == '__main__':
     unittest.main()

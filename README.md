@@ -42,7 +42,7 @@ Google Chrome is used for the dashboard and all agent browser sessions, includin
 2. Open **Job search**, enter keywords, and select LinkedIn, SEEK, or both. Search finds matches and prepares documents for review; it does not submit applications.
 3. Add a job link, company, title and pasted description to the pipeline. Duplicate links are rejected even when tracking parameters differ.
 4. Select jobs and click **Prepare selected**. Open each job to read or download its DOCX resume.
-5. Choose **Automatic submission**, then click **Approve** beside each ready job to queue its application. **Review** opens the documents; **Reject** cancels a waiting job and excludes it. Approved jobs wait for the current browser operation and submit one at a time. In **Manual handoff**, approval saves the decision; switching to Automatic submission queues selected, already-approved jobs. **Run selected** remains available for batches of up to 10 approved applications.
+5. Review the resume and cover letter, then click **Approve & apply**. This immediately queues that job for automatic submission; no mode selection or second Run click is needed. Approved jobs wait for the current browser operation and submit one at a time. Previously approved, unqueued jobs show **Apply approved**. **Reject** cancels a waiting job. **Apply approved selection** can start a batch of up to 10 already-approved jobs. For a manual application, use **Apply manually in Chrome** in the review dialog.
 6. Sign in through the visible agent browser if needed. It has a separate persistent browser profile. A manual handoff stays open for up to five minutes per job. Your resume is available through the dashboard and at `data/<job-id>.docx`.
 
 Automatic mode attempts LinkedIn Easy Apply and SEEK application forms. It fills recognised contact fields and exact saved question answers, uploads the resume to a recognised resume field, advances identifiable steps, and clicks an identifiable submit button. Unknown questions, consent controls, login, verification and unsupported steps hand control to you. This connector is experimental: site layouts vary and live submission has not been tested. A click alone never counts as a successful application; unrecognised confirmation leaves the application marked **Check submission**. Check the site before resetting it to Saved and preparing again.
@@ -103,7 +103,7 @@ This format follows [Greenhouse's published parsing guidance](https://support.gr
 - **Basic tailoring** remains available: matching skills move first and all other profile text stays verbatim. Select the engine beside **Prepare selected**. Local AI processes up to 10 selected jobs sequentially while the dashboard stays responsive. Editing is paused during generation to keep profile snapshots consistent.
 - Browser discovery is available through **Job agent**. There is no recurring search scheduler or universal application connector.
 - Login and CAPTCHA are handled by you. No stealth mechanisms or verification bypass.
-- LinkedIn prohibits third-party site automation, and SEEK restricts automated access except through permitted interfaces. Using automated mode can risk account restrictions. Manual handoff is the default. See [LinkedIn guidance](https://www.linkedin.com/help/linkedin/answer/a1340567/automated-activity-on-linkedin?lang=en) and [SEEK terms](https://au.seek.com/terms/en).
+- LinkedIn prohibits third-party site automation, and SEEK restricts automated access except through permitted interfaces. Using automated mode can risk account restrictions. Approve & apply queues automatic submission; Apply manually in Chrome remains available in the review dialog. See [LinkedIn guidance](https://www.linkedin.com/help/linkedin/answer/a1340567/automated-activity-on-linkedin?lang=en) and [SEEK terms](https://au.seek.com/terms/en).
 - Browser confirmation recognition is intentionally conservative. You can update statuses manually after checking your applications.
 
 ## Data and development
@@ -152,3 +152,9 @@ Uncertain application outcomes receive an automatic read-only check of the exact
 ## Validation and release status
 
 See [QA_REPORT.md](QA_REPORT.md) for the latest test results, fixes and live-site limits. This release is a local desktop workspace, not a public hosted service. The automated regression suite and local AI/export checks pass. Live job-site sign-in/verification is still required, and real application submission has not been certified. Older unsubmitted documents are marked for refresh; review regenerated documents before approving them.
+
+## Resolving missing information
+
+Before calling a requirement unknown, suitability checks now include saved application answers alongside profile facts and eligible certificate details. Preparing an existing job rechecks those facts. Requirement extraction retries an invalid AI quotation once, then uses the original advertisement wording instead of asking the applicant to repair AI output.
+
+The review dialog distinguishes **Preparation failed**, **Review match**, and **Profile details needed**. When personal facts remain unresolved, enter accurate details in **Details still needed** and select **Save answers & retry**. Answers are saved in the active career profile and reused during assessment; changing them refreshes unsubmitted drafts. Negative answers are retained. Unresolved requirements stay visible, and preparing documents does not approve or submit the application.

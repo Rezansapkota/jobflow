@@ -7,6 +7,11 @@ from datetime import date
 BASE = 'http://127.0.0.1:11434'
 MODEL = 'qwen3:8b'
 
+
+class IncompleteAnalysisError(ValueError):
+    pass
+
+
 RESUME_DEFAULTS = {'length': 'balanced', 'tone': 'direct', 'emphasis': 'role_fit', 'max_skills': 12}
 RESUME_CHOICES = {'length': ('concise', 'balanced', 'detailed'), 'tone': ('direct', 'formal'),
                   'emphasis': ('role_fit', 'transferable', 'achievements')}
@@ -62,23 +67,30 @@ def job_priorities(job):
     description = requirements_text(job['description'])
     if not description:
         raise ValueError('The job description contains no identifiable duties or requirements. Add the full job description.')
-    result = structured(
-        'Identify the main duties and required or preferred skills and qualifications of this job. '
-        'Return up to 8 short verbatim quotations from the description, highest priority first. Return fewer when appropriate; never pad the list. '
-        'Exclude company promotion, benefits, equal-opportunity statements and incidental mentions of other roles. '
-        'Keep requirement conditions intact. Each quotation must be between 12 and 300 characters. Return priorities.',
-        {'title': job.get('title', ''), 'description': description},
-        {'type': 'object', 'properties': {'priorities': {'type': 'array', 'items': {'type': 'string'}, 'minItems': 1, 'maxItems': 8}},
-         'required': ['priorities'], 'additionalProperties': False}, certification_context=False)
-    priorities = result.get('priorities')
-    normalize = lambda text: ' '.join(text.casefold().split())
-    if not isinstance(priorities, list) or not 1 <= len(priorities) <= 8:
-        raise ValueError('The job requirements could not be verified against the description. Try preparing again.')
-    verified = [item.strip() for item in priorities if isinstance(item, str) and 12 <= len(item.strip()) <= 300
-                and normalize(item) in normalize(description)]
-    if not verified:
-        raise ValueError('The job requirements could not be verified against the description. Try preparing again.')
-    return list(dict.fromkeys(verified))
+    # Retry malformed/untraceable model output once, then use the source
+    # advertisement directly. This repairs extraction without inventing facts.
+    for attempt in range(2):
+        try:
+            result = structured(
+                'Identify the main duties and required or preferred skills and qualifications of this job. '
+                'Return up to 8 short verbatim quotations from the description, highest priority first. Return fewer when appropriate; never pad the list. '
+                'Exclude company promotion, benefits, equal-opportunity statements and incidental mentions of other roles. '
+                'Keep requirement conditions intact. Each quotation must be between 12 and 300 characters. Return priorities.',
+                {'title': job.get('title', ''), 'description': description},
+                {'type': 'object', 'properties': {'priorities': {'type': 'array', 'items': {'type': 'string'}, 'minItems': 1, 'maxItems': 8}},
+                 'required': ['priorities'], 'additionalProperties': False}, certification_context=False)
+        except IncompleteAnalysisError:
+            continue
+        priorities = result.get('priorities')
+        normalize = lambda text: ' '.join(text.casefold().split())
+        if isinstance(priorities, list) and 1 <= len(priorities) <= 8:
+            verified = [item.strip() for item in priorities if isinstance(item, str) and 12 <= len(item.strip()) <= 300
+                        and normalize(item) in normalize(description)]
+            if verified:
+                return list(dict.fromkeys(verified))
+    # Full original wording preserves conditions and avoids paraphrase errors.
+    # requirements_text has already removed labelled company/benefit sections.
+    return [description]
 
 
 def rewrite(profile, job, preferences=None):
@@ -194,7 +206,7 @@ def structured(instruction, data, schema, certification_context=True, max_tokens
             raise ValueError()
         return result
     except (KeyError, TypeError, ValueError) as exc:
-        raise ValueError('Qwen returned incomplete analysis. This job needs manual review.') from exc
+        raise IncompleteAnalysisError('Qwen returned incomplete analysis. This job needs manual review.') from exc
 
 
 def search_plan(keywords):
@@ -220,19 +232,22 @@ def search_plan(keywords):
 
 def assess(profile, job):
     import re
+    from tailoring import requirements_text
     from job_location import profile_location, matches as location_matches
     profile = {**profile, 'search_location': profile_location(profile)}
+    passages = [job.get('title', '')] + re.split(r'\n+|(?<=[.!?])\s+', requirements_text(job.get('description', '')))
+    evidence_choices = list(dict.fromkeys([''] + [line.strip() for line in passages if 8 <= len(line.strip()) <= 1200]))
     schema = {'type': 'object', 'properties': {
         'score': {'type': 'integer', 'minimum': 0, 'maximum': 100},
         'reason': {'type': 'string'},
         'missing_requirements': {'type': 'array', 'items': {'type': 'string'}},
         'unknown_requirements': {'type': 'array', 'items': {'type': 'string'}},
         'role_match': {'type': 'boolean'}, 'location_match': {'type': 'boolean'},
-        'matched_target_role': {'type': 'string', 'enum': [''] + [r.strip() for r in re.split(r'[,\n]', profile.get('roles', '')) if r.strip()]}, 'role_evidence': {'type': 'string'}
+        'matched_target_role': {'type': 'string', 'enum': [''] + [r.strip() for r in re.split(r'[,\n]', profile.get('roles', '')) if r.strip()]}, 'role_evidence': {'type': 'string', 'enum': evidence_choices}
     }, 'required': ['score', 'reason', 'missing_requirements', 'unknown_requirements', 'role_match', 'location_match', 'matched_target_role', 'role_evidence'], 'additionalProperties': False}
     result = structured(
-        'Assess suitability for a job. First decide occupational relevance using the actual job title and core duties against the explicit target roles. Shared generic words (support, officer, worker), transferable skills (cleaning, communication, customer service), a past employer, or incidental mentions of disability do NOT establish a role match. For example IT support, office administration and kitchen steward are not disability support work. Equivalent occupational titles are allowed only when the core duties match. If relevant, copy one target role exactly into matched_target_role and quote a short exact passage from the job title or description demonstrating those duties into role_evidence. Otherwise set role_match false and both evidence fields empty. Score demonstrated role fit from 0 to 100; an unrelated occupation must score 0. Identify ALL mandatory requirements that conflict with the profile in missing_requirements, and mandatory requirements without supporting evidence in unknown_requirements. Work rights, licences, required experience, location and availability are hard constraints when specified. Text such as "if applicable", "available upon request", pending training or working near an occupation does not prove a qualification or direct professional experience. Preferred qualifications are not mandatory. Set location_match only when the actual job location fits search_location; missing location is not a confirmed match and remote does not mean worldwide. Explain the decision briefly. Return the specified JSON.',
-        {'candidate': {k: profile.get(k, '') for k in ('headline', 'summary', 'skills', 'experience', 'education', 'certifications', 'roles', 'search_location', 'work_rights', 'constraints')}, 'job': {k: job.get(k, '') for k in ('title', 'company', 'description', 'location', 'source')}}, schema)
+        'Assess suitability for a job. First decide occupational relevance using the actual job title and core duties against the explicit target roles. Shared generic words (support, officer, worker), transferable skills (cleaning, communication, customer service), a past employer, or incidental mentions of disability do NOT establish a role match. For example IT support, office administration and kitchen steward are not disability support work. Equivalent occupational titles are allowed only when the core duties match. If relevant, copy one target role exactly into matched_target_role and quote a short exact passage from the job title or description demonstrating those duties into role_evidence. Otherwise set role_match false and both evidence fields empty. Score demonstrated role fit from 0 to 100; an unrelated occupation must score 0. Identify ALL mandatory requirements that conflict with the profile in missing_requirements, and mandatory requirements without supporting evidence in unknown_requirements. Work rights, licences, required experience, location and availability are hard constraints when specified. Text such as "if applicable", "available upon request", pending training or working near an occupation does not prove a qualification or direct professional experience. Use saved_application_answers as candidate-provided facts, preserving negative answers, dates and restrictions. Check all provided facts before calling a requirement unknown. Do not infer a yes/no answer from generic experience or from the job text. Preferred qualifications are not mandatory. Set location_match only when the actual job location fits search_location; missing location is not a confirmed match and remote does not mean worldwide. Explain the decision briefly. Return the specified JSON.',
+        {'candidate': {k: profile.get(k, '') for k in ('headline', 'summary', 'skills', 'experience', 'education', 'certifications', 'roles', 'search_location', 'work_rights', 'constraints')}, 'saved_application_answers': profile.get('answers', {}), 'job': {k: job.get(k, '') for k in ('title', 'company', 'description', 'location', 'source')}}, schema)
     if (type(result.get('score')) is not int or not 0 <= result['score'] <= 100
             or not isinstance(result.get('reason'), str) or not result['reason'].strip()
             or any(type(result.get(k)) is not bool for k in ('role_match', 'location_match'))

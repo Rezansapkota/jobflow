@@ -167,18 +167,29 @@ def tailor(p, job, ai_draft=None):
 
 
 def prepare_ai(ids, p):
-    from local_ai import rewrite, cover_letter
+    from local_ai import rewrite, cover_letter, assess
     from tailoring import focused_profile
     from certificates import select_for_job
     try:
         for jid in ids:
             job = get_job(jid)
             try:
+                if (job['status'] == 'needs_input' and job.get('assessment')) or (p.get('roles') and job.get('location')):
+                    job['assessment'] = assess(p, job)
                 draft = rewrite(p, job)
                 letter = cover_letter(focused_profile(p, draft), job)
-                job.update(approved_documents=None, resume=tailor(p, job, draft), cover_letter=letter, profile_snapshot=p, certificate_ids=select_for_job(p, job), status='ready', note='Qwen resume and cover letter ready. Review before applying.')
+                job.update(approved_documents=None, resume=tailor(p, job, draft), cover_letter=letter, profile_snapshot=p, certificate_ids=select_for_job(p, job), status='ready', input_kind=None, input_questions=[], note='Qwen resume and cover letter ready. Review before applying.')
+                assessment = job.get('assessment') or {}
+                gaps = list(dict.fromkeys(assessment.get('missing_requirements', []) + assessment.get('unknown_requirements', [])))
+                if gaps:
+                    job.update(status='needs_input', input_kind='profile_information', input_questions=gaps,
+                               note='Documents prepared using saved facts. Please confirm these details in My profile or Saved application answers: ' + '; '.join(gaps))
+                elif assessment and (not assessment.get('role_match') or not assessment.get('location_match')):
+                    job.update(status='needs_input', input_kind='job_match', note='Documents prepared. Review the job match: ' + assessment.get('reason', 'The role or location could not be verified.'))
             except Exception as exc:
                 job['note'] = str(exc) if isinstance(exc, ValueError) else 'Local tailoring failed. Try again or choose Basic tailoring.'
+                if not (job.get('resume') and job.get('cover_letter')) or job['status'] == 'needs_input':
+                    job.update(status='needs_input', input_kind='processing_error', input_questions=[])
             save_job(job)
     finally:
         AI_LOCK.release()

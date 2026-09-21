@@ -1,5 +1,7 @@
 # Jobflow validation — 21 September 2026
 
+Approval workflow update: **Approve & apply** now immediately queues automatic submission, with no application-mode selector. Existing approved jobs offer **Apply approved**. Manual handoff is an explicit separate action in the review dialog. The updated suite passed **147 tests in 57.500 seconds**. The browser-to-API-to-queue regression confirms one approval starts one simulated submission and reloading does not repeat it. Timeout recovery and actionable review/preparation buttons also pass. No real application was submitted during these checks; the live-site limits below still apply.
+
 The tested build is running locally at http://localhost:8768. Core local workflows pass validation. Fully unattended LinkedIn/SEEK automation and public hosting are not certified for production.
 
 ## Results

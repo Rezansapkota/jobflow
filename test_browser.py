@@ -10,6 +10,179 @@ from browser_agent import BrowserAgent
 
 
 class BrowserTests(unittest.TestCase):
+    def test_missing_details_can_be_saved_and_retried_without_inventing_an_answer(self):
+        import json
+        from playwright.sync_api import expect
+        previous = app.profile()['id']
+        profile = {**app.DEFAULT_PROFILE, 'id': 'missing-details', 'title': 'Missing details fixture',
+                   'name': 'Alex Example', 'email': 'alex@example.invalid'}
+        question = 'Do you hold a current police check?'
+        with app.connect() as connection:
+            connection.execute('INSERT INTO profiles VALUES (?, ?)', (profile['id'], json.dumps(profile)))
+            connection.execute("UPDATE settings SET value=? WHERE key='active_profile'", (profile['id'],))
+        job = {'id': 'missing-details-job', 'profile_id': profile['id'], 'url': 'https://www.seek.com.au/job/55500095',
+               'title': 'Missing details role', 'company': 'Fictional', 'source': 'SEEK', 'status': 'needs_input',
+               'description': 'Fictional care role requiring a police check.', 'note': 'Confirm your details.',
+               'input_kind': 'profile_information', 'input_questions': [question], 'resume': None}
+        app.save_job(job)
+        page = self.browser.new_page()
+        prepared = []
+        try:
+            def prepare_request(route):
+                prepared.append(route.request.post_data_json)
+                route.fulfill(content_type='application/json', body='{"ok": true}')
+            page.route('**/api/prepare', prepare_request)
+            page.goto(f'http://127.0.0.1:{self.server.server_port}')
+            page.get_by_role('button', name='Review issues Missing details role', exact=True).click()
+            expect(page.get_by_label(question, exact=True)).to_have_value('')
+            page.get_by_label(question, exact=True).fill('No')
+            page.get_by_role('button', name='Save answers & retry', exact=True).click()
+            expect(page.locator('#detail-dialog')).not_to_be_visible()
+            self.assertEqual(app.profile()['answers'][question], 'No')
+            self.assertEqual(prepared, [{'ids': [job['id']], 'engine': 'ollama'}])
+            self.assertFalse(app.get_job(job['id']).get('submission_requested'))
+        finally:
+            page.close()
+            with app.connect() as connection:
+                connection.execute("UPDATE settings SET value=? WHERE key='active_profile'", (previous,))
+                connection.execute('DELETE FROM jobs WHERE id=?', (job['id'],))
+                connection.execute('DELETE FROM profiles WHERE id=?', (profile['id'],))
+
+    def test_approve_click_runs_automatic_submission_without_mode_selection(self):
+        from playwright.sync_api import expect
+        from review import approved
+        job = {'id': 'automatic-click', 'profile_id': app.profile()['id'],
+               'url': 'https://www.seek.com.au/job/55500094', 'title': 'Automatic click fixture',
+               'company': 'Fictional', 'source': 'SEEK', 'status': 'ready',
+               'description': 'Fictional role for isolated submission testing.', 'note': 'Ready',
+               'resume': {'text': 'Fixture resume', 'matched': [], 'note': 'Test'}, 'cover_letter': 'Fixture letter'}
+        calls = []
+        class FixtureAgent:
+            def __init__(self, *args, **kwargs): pass
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def apply(self, current, profile, resume, submit, letter):
+                if not approved(current) or not resume.exists() or not letter.exists():
+                    raise AssertionError('Submission started without approved document files')
+                calls.append((current['id'], submit))
+                return 'submitted', 'Confirmed by isolated fixture.'
+        app.save_job(job)
+        app.STOP.clear()
+        page = self.browser.new_page()
+        try:
+            with tempfile.TemporaryDirectory() as directory, patch.object(app, 'DATA', Path(directory)), patch('browser_agent.BrowserAgent', FixtureAgent):
+                page.goto(f'http://127.0.0.1:{self.server.server_port}')
+                expect(page.locator('#mode')).to_have_count(0)
+                page.get_by_role('button', name='Approve & apply Automatic click fixture', exact=True).click()
+                card = page.locator('.job').filter(has_text='Automatic click fixture')
+                expect(card.locator('.badge')).to_have_text('Submitted', timeout=10000)
+                self.assertEqual(calls, [(job['id'], True)])
+                self.assertFalse(app.RUN_LOCK.locked())
+                page.reload()
+                expect(page.locator('.job').filter(has_text='Automatic click fixture').locator('.badge')).to_have_text('Submitted')
+                self.assertEqual(len(calls), 1)
+        finally:
+            page.close()
+            with app.connect() as connection:
+                connection.execute('DELETE FROM jobs WHERE id=?', (job['id'],))
+
+    def test_approval_pending_survives_refresh_and_finishes_in_both_views(self):
+        from playwright.sync_api import expect
+        job = {'id': 'approval-loading', 'profile_id': app.profile()['id'],
+               'url': 'https://www.seek.com.au/job/55500091', 'title': 'Approval loading fixture',
+               'company': 'Fictional', 'source': 'SEEK', 'status': 'ready',
+               'description': 'Fictional customer service role for testing.', 'note': 'Ready',
+               'resume': {'text': 'Fixture resume', 'matched': [], 'note': 'Test'}, 'cover_letter': 'Fixture letter'}
+        app.save_job(job)
+        page = self.browser.new_page()
+        held = []
+        worker_patch = patch('submission_queue.submit_when_idle')
+        worker = worker_patch.start()
+        self.addCleanup(worker_patch.stop)
+        try:
+            page.route('**/api/review/approve', lambda route: held.append(route))
+            page.goto(f'http://127.0.0.1:{self.server.server_port}')
+            page.get_by_role('button', name='Review Approval loading fixture', exact=True).click()
+            review = page.locator('[data-review-approve]')
+            review.click()
+            expect(review).to_have_text('Approving...')
+            expect(review).to_be_disabled()
+            page.evaluate('refresh()')
+            expect(review).to_have_attribute('aria-busy', 'true')
+            board = page.locator('[data-approve="approval-loading"]')
+            expect(board).to_be_disabled()
+            expect(board).to_have_text('Approving...')
+            self.assertEqual(len(held), 1)
+            held[0].continue_()
+            expect(review).to_have_text('Queued')
+            expect(review).to_have_attribute('aria-busy', 'false')
+            expect(board).to_have_text('Queued')
+            expect(board).to_be_disabled()
+            self.assertEqual(board.evaluate('el => getComputedStyle(el).cursor'), 'not-allowed')
+            self.assertTrue(held[0].request.post_data_json['submit'])
+            self.assertTrue(app.get_job(job['id'])['submission_requested'])
+            worker.assert_called_once()
+        finally:
+            page.close()
+            with app.connect() as connection:
+                connection.execute('DELETE FROM jobs WHERE id=?', (job['id'],))
+
+    def test_needs_input_job_has_a_working_review_and_prepare_action(self):
+        from playwright.sync_api import expect
+        job = {'id': 'approval-review', 'profile_id': app.profile()['id'],
+               'url': 'https://www.seek.com.au/job/55500093', 'title': 'Review fixture',
+               'company': 'Fictional', 'source': 'SEEK', 'status': 'needs_input',
+               'description': 'Fictional care role requiring review before preparation.',
+               'note': 'The job match needs review.', 'resume': None, 'cover_letter': None}
+        app.save_job(job)
+        page = self.browser.new_page()
+        prepared = []
+        try:
+            def prepare_request(route):
+                prepared.append(route.request.post_data_json)
+                route.fulfill(content_type='application/json', body='{"ok": true}')
+            page.route('**/api/prepare', prepare_request)
+            page.goto(f'http://127.0.0.1:{self.server.server_port}')
+            expect(page.locator('[data-approve="approval-review"]')).to_have_count(0)
+            page.get_by_role('button', name='Review issues Review fixture', exact=True).click()
+            expect(page.locator('#detail-content')).to_contain_text('The job match needs review.')
+            page.get_by_role('button', name='Prepare documents after review', exact=True).click()
+            expect(page.locator('#detail-dialog')).not_to_be_visible()
+            self.assertEqual(prepared, [{'ids': [job['id']], 'engine': 'ollama'}])
+            self.assertFalse(app.get_job(job['id']).get('approved_documents'))
+            self.assertFalse(app.get_job(job['id']).get('submission_requested'))
+        finally:
+            page.close()
+            with app.connect() as connection:
+                connection.execute('DELETE FROM jobs WHERE id=?', (job['id'],))
+
+    def test_approval_timeout_releases_button_without_retrying_submission(self):
+        from playwright.sync_api import expect
+        job = {'id': 'approval-timeout', 'profile_id': app.profile()['id'],
+               'url': 'https://www.seek.com.au/job/55500092', 'title': 'Approval timeout fixture',
+               'company': 'Fictional', 'source': 'SEEK', 'status': 'ready',
+               'description': 'Fictional customer service role for testing.', 'note': 'Ready',
+               'resume': {'text': 'Fixture resume', 'matched': [], 'note': 'Test'}, 'cover_letter': 'Fixture letter'}
+        app.save_job(job)
+        page = self.browser.new_page()
+        requests = []
+        try:
+            page.route('**/api/review/approve', lambda route: requests.append(route))
+            page.goto(f'http://127.0.0.1:{self.server.server_port}')
+            button = page.locator('[data-approve="approval-timeout"]')
+            button.click()
+            expect(button).to_have_attribute('aria-busy', 'true')
+            expect(page.locator('#toast')).to_contain_text('Approval response timed out', timeout=16000)
+            expect(button).to_be_enabled()
+            expect(button).to_have_attribute('aria-busy', 'false')
+            self.assertEqual(len(requests), 1)
+            requests[0].abort()
+            self.assertFalse(app.get_job(job['id']).get('approved_documents'))
+        finally:
+            page.close()
+            with app.connect() as connection:
+                connection.execute('DELETE FROM jobs WHERE id=?', (job['id'],))
+
     def test_favicon_loads_without_content_security_errors(self):
         page = self.browser.new_page()
         errors = []
@@ -264,9 +437,12 @@ class BrowserTests(unittest.TestCase):
         page.get_by_role('button', name='Review test role', exact=True).click()
         page.get_by_text('Resume preview example', exact=True).wait_for()
         page.get_by_text('Cover letter preview example', exact=True).wait_for()
-        page.get_by_role('button', name='I reviewed both documents - approve').click()
-        page.get_by_role('button', name='Documents approved', exact=True).wait_for()
-        self.assertTrue(approved(app.get_job(job['id'])))
+        with patch('submission_queue.submit_when_idle') as worker:
+            page.get_by_role('button', name='Approve & apply', exact=True).click()
+            page.get_by_role('button', name='Queued', exact=True).wait_for()
+            self.assertTrue(approved(app.get_job(job['id'])))
+            self.assertTrue(app.get_job(job['id'])['submission_requested'])
+            worker.assert_called_once()
         page.close()
 
     def test_profile_to_resume_workflow(self):
@@ -416,8 +592,7 @@ class BrowserTests(unittest.TestCase):
                 page.get_by_text('Decision fixture resume', exact=True).wait_for()
                 page.get_by_text('Decision fixture letter', exact=True).wait_for()
                 page.locator('[data-close="detail-dialog"]').click()
-                page.get_by_label('Application mode', exact=True).select_option('auto')
-                page.get_by_role('button', name='Approve Decision fixture job', exact=True).click()
+                page.get_by_role('button', name='Approve & apply Decision fixture job', exact=True).click()
                 page.locator('#toast').get_by_text('Approved and queued', exact=False).wait_for()
                 worker.assert_called_once()
                 self.assertTrue(app.get_job(job['id'])['submission_requested'])

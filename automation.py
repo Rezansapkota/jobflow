@@ -98,7 +98,7 @@ def run(profile, config):
                 if assessment.get('role_match_unverified') and assessment['location_match']:
                     if new:
                         record['found'] += 1
-                    job.update(status='needs_input', note='Qwen suggested a possible role match but could not quote valid evidence. Review the job description before preparing documents.')
+                    job.update(status='needs_input', input_kind='job_match', note='Qwen suggested a possible role match but could not quote valid evidence. Review the job description before preparing documents.')
                     app.save_job(job)
                     record['skipped'] += 1
                     event(f'{job["title"]}: saved for review because role-match evidence could not be verified.')
@@ -133,15 +133,16 @@ def run(profile, config):
                 return
             event(f'Writing cover letter: {job["title"]}.', 'writing_cover_letter')
             letter = cover_letter(focused_profile(profile, draft), job)
-            job.update(approved_documents=None, resume=app.tailor(profile, job, draft), cover_letter=letter, profile_snapshot=profile, certificate_ids=select_for_job(profile, job), status='ready', note='Resume and cover letter ready. Open this job to review and approve.')
+            job.update(approved_documents=None, resume=app.tailor(profile, job, draft), cover_letter=letter, profile_snapshot=profile, certificate_ids=select_for_job(profile, job), status='ready', input_kind=None, input_questions=[], note='Resume and cover letter ready. Open this job to review and approve.')
             if not suitable(assessment, config['min_score']):
-                job.update(status='needs_input', note='Partial-match drafts ready for review. Requirements still need attention: ' + '; '.join(assessment['missing_requirements'] + assessment['unknown_requirements']))
+                gaps = list(dict.fromkeys(assessment['missing_requirements'] + assessment['unknown_requirements']))
+                job.update(status='needs_input', input_kind='profile_information', input_questions=gaps, note='Partial-match drafts ready for review. Saved information does not resolve: ' + '; '.join(gaps))
             app.save_job(job)
             record['prepared'] += 1
             event(f'{job["title"]}: ready for your document review.', 'review_ready')
         except Exception as exc:
             record['errors'] += 1
-            job.update(status='needs_input', note=f'Document preparation failed: {str(exc)[:350]}')
+            job.update(status='needs_input', input_kind='processing_error', input_questions=[], note=f'Document preparation failed: {str(exc)[:350]}')
             app.save_job(job)
             event(f'{job["title"]}: {job["note"]}')
         finally:

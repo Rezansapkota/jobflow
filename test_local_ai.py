@@ -106,10 +106,34 @@ class LocalAITests(unittest.TestCase):
         self.assertEqual(focused['education'], 'First Aid')
         self.assertEqual(focused['certifications'], '')
 
-    def test_job_priorities_must_be_quoted_from_description(self):
+    def test_untraceable_priorities_retry_then_use_original_job_text(self):
         for priorities in ([], ['Invented requirement not in the description.'], [False]):
-            with self.subTest(priorities=priorities), patch.object(local_ai, 'structured', return_value={'priorities': priorities}), self.assertRaises(ValueError):
+            with self.subTest(priorities=priorities), patch.object(local_ai, 'structured', return_value={'priorities': priorities}) as model:
+                self.assertEqual(local_ai.job_priorities(self.job), [self.job['description']])
+                self.assertEqual(model.call_count, 2)
+
+    def test_priority_retry_recovers_verified_quotes(self):
+        with patch.object(local_ai, 'structured', side_effect=[{'priorities': ['Invented qualification']}, {'priorities': [self.job['description']]}]) as model:
+            self.assertEqual(local_ai.job_priorities(self.job), [self.job['description']])
+            self.assertEqual(model.call_count, 2)
+
+    def test_incomplete_priorities_recover_but_service_failures_remain_visible(self):
+        with patch.object(local_ai, 'structured', side_effect=local_ai.IncompleteAnalysisError('Invalid JSON')) as model:
+            self.assertEqual(local_ai.job_priorities(self.job), [self.job['description']])
+            self.assertEqual(model.call_count, 2)
+        with patch.object(local_ai, 'structured', side_effect=ValueError('Ollama unavailable')) as model:
+            with self.assertRaisesRegex(ValueError, 'unavailable'):
                 local_ai.job_priorities(self.job)
+            self.assertEqual(model.call_count, 1)
+
+    def test_assessment_reads_saved_answers_without_overwriting_them(self):
+        result = {'score': 0, 'reason': 'Review saved evidence.', 'missing_requirements': [], 'unknown_requirements': [],
+                  'role_match': False, 'location_match': True, 'matched_target_role': '', 'role_evidence': ''}
+        profile = {**self.profile, 'answers': {'Do you hold a police check?': 'No', 'Availability': 'Weekends only'}}
+        with patch.object(local_ai, 'structured', return_value=result) as model:
+            local_ai.assess(profile, self.job)
+        self.assertEqual(model.call_args.args[1]['saved_application_answers'], profile['answers'])
+        self.assertEqual(profile['answers']['Do you hold a police check?'], 'No')
 
     def test_personal_circumstances_cannot_be_inferred_from_job(self):
         for claim in ['I am based in Darwin and available for this position.',

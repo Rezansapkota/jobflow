@@ -17,6 +17,20 @@ $('#account-stop').onclick = async () => { try { await api('/api/stop', {}); } c
 const beforeAccountsRender = render;
 render = function() {
     beforeAccountsRender();
+    const reviewButton = $('[data-review-approve]');
+    if (reviewButton) {
+        const job = state.jobs.find(j => j.id === reviewButton.dataset.reviewApprove);
+        if (job) updateReviewApproval(reviewButton, job);
+        else reviewButton.disabled = true;
+    }
+    const handoff = $('[data-review-handoff]');
+    if (handoff) {
+        const job = state.jobs.find(j => j.id === handoff.dataset.reviewHandoff);
+        handoff.hidden = Boolean(job?.submission_requested || job?.submission_in_progress);
+        handoff.disabled = Boolean(state.running || state.preparing || job?.status !== 'ready' || pendingApprovals.has(job?.id));
+    }
+    const prepare = $('[data-review-prepare]');
+    if (prepare) prepare.disabled = Boolean(state.running || state.preparing || pendingDocumentJobs.has(prepare.dataset.reviewPrepare));
     const pending = state.account_pending;
     accountBanner.hidden = !pending;
     if (pending) $('#account-instructions').textContent = `In the Chrome window, finish sign-in or verification for ${pending.source}. Then click Account ready below to save that browser session. After connecting your sites, start your search again.`;
@@ -28,22 +42,91 @@ detail = function(id) {
     const panel = document.createElement('div');
     panel.className = 'panel';
     if (job.status === 'ready' && job.resume && job.cover_letter) {
-        panel.innerHTML = '<h3>Review before submission</h3><p>Read the tailored resume and cover letter above. Approval applies to these documents and attachments. In Automatic submission mode, Approve queues this job immediately. In Manual handoff mode, approval saves your decision.</p>';
+        panel.innerHTML = '<h3>Review before submission</h3><p>Read the tailored resume and cover letter above. Approval applies to these documents and attachments. Approve &amp; apply immediately queues this job for automatic submission. The agent uses your saved answers and pauses for anything it cannot complete.</p>';
         const approve = document.createElement('button');
-        approve.textContent = job.documents_approved ? 'Documents approved' : 'I reviewed both documents - approve';
-        approve.disabled = Boolean(job.submission_requested || job.submission_in_progress || state.preparing || (job.documents_approved && $('#mode').value !== 'auto'));
+        approve.dataset.reviewApprove = id;
+        updateReviewApproval(approve, job);
         approve.onclick = async () => {
-            try {
-                await approveJob(id);
-                await refresh();
-                approve.textContent = 'Documents approved'; approve.disabled = true;
-                toast($('#mode').value === 'auto' ? 'Approved and queued for automatic submission.' : 'Documents approved.');
-            } catch (err) { toast(err.message); }
+            try { await approveJob(id); }
+            catch (err) { toast(err.message); }
         };
         panel.appendChild(approve);
-    } else if (!job.cover_letter || !job.resume) {
-        panel.textContent = 'Build both a resume and cover letter before reviewing and approving submission.';
+        const handoff = document.createElement('button');
+        handoff.textContent = 'Apply manually in Chrome';
+        handoff.dataset.reviewHandoff = id;
+        handoff.hidden = Boolean(job.submission_requested || job.submission_in_progress);
+        handoff.disabled = Boolean(state.running || state.preparing);
+        handoff.onclick = async () => {
+            handoff.disabled = true;
+            try {
+                await api('/api/run', {ids: [id], submit: false});
+                $('#detail-dialog').close();
+                toast('Opening the application in Chrome for you to complete.');
+                await refresh();
+            } catch (err) { toast(err.message); }
+            finally { render(); }
+        };
+        panel.appendChild(handoff);
+    } else if (['saved', 'needs_input', 'ready'].includes(job.status)) {
+        const gaps = [...new Set(job.input_questions || [...(job.assessment?.missing_requirements || []), ...(job.assessment?.unknown_requirements || [])])];
+        if (job.status === 'needs_input' && gaps.length) {
+            const answersForm = document.createElement('form');
+            const heading = document.createElement('h3');
+            heading.textContent = 'Details still needed';
+            const explanation = document.createElement('p');
+            explanation.textContent = 'The saved information could not resolve these requirements. Add your actual details, including no or not held where appropriate. Saved answers will be reused when checking jobs.';
+            answersForm.append(heading, explanation);
+            const fields = gaps.map(question => {
+                const label = document.createElement('label');
+                label.textContent = question;
+                const input = document.createElement('textarea');
+                input.rows = 2;
+                input.maxLength = 2000;
+                input.value = state.profile.answers?.[question] || '';
+                label.appendChild(input);
+                answersForm.appendChild(label);
+                return {question, input};
+            });
+            const save = document.createElement('button');
+            save.type = 'submit';
+            save.textContent = 'Save answers & retry';
+            save.disabled = Boolean(state.running || state.preparing);
+            answersForm.appendChild(save);
+            answersForm.onsubmit = async event => {
+                event.preventDefault();
+                save.disabled = true;
+                try {
+                    const answers = {...state.profile.answers};
+                    for (const {question, input} of fields) {
+                        if (input.value.trim()) answers[question] = input.value.trim();
+                    }
+                    if (JSON.stringify(answers) === JSON.stringify(state.profile.answers)) throw Error('Add an answer to at least one missing detail.');
+                    await api('/api/profile', {...state.profile, answers});
+                    await refresh(true);
+                    await prepareJobDocuments(id);
+                } catch (err) { toast(err.message); }
+                finally { save.disabled = Boolean(state.running || state.preparing); }
+            };
+            panel.appendChild(answersForm);
+        }
+        const editProfile = document.createElement('button');
+        editProfile.textContent = 'Update my profile';
+        editProfile.onclick = () => { $('#detail-dialog').close(); view('profile'); };
+        panel.appendChild(editProfile);
+        const prepare = document.createElement('button');
+        prepare.textContent = job.resume && job.cover_letter ? 'Rebuild documents after review' : 'Prepare documents after review';
+        prepare.dataset.reviewPrepare = id;
+        prepare.disabled = Boolean(state.running || state.preparing || pendingDocumentJobs.has(id));
+        prepare.onclick = async () => {
+            try { await prepareJobDocuments(id); }
+            catch (err) { toast(err.message); }
+        };
+        panel.appendChild(prepare);
     }
+    const reason = document.createElement('p');
+    reason.className = 'approval-reason';
+    reason.textContent = approvalReason(job);
+    panel.appendChild(reason);
     $('#detail-content').appendChild(panel);
 };
 const connectionControls = $('#login');
